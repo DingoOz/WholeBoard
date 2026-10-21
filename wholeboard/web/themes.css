@@ -1,0 +1,82 @@
+/* Colour themes. Each sets every token from style.css; the html element carries data-theme. */
+
+:root[data-theme="green-gold-dark"] {
+  --bg: #0e1210; --panel: #151b18; --panel-2: #1b2320; --line: #27312c; --text: #e6ebe7; --muted: #8b968f;
+  --accent: #37b37b; --accent-2: #e8c15a; --danger: #ef6a63; --warn: #e0a23a; --ok: #37b37b; --info: #6aa5f5;
+  --board-bg: #0f1512; --board-mask: #1f4a35; --on-accent: #fff; --shadow: 0 1px 2px rgba(0,0,0,.3); color-scheme: dark;
+}
+:root[data-theme="green-gold-light"] {
+  --bg: #f5f6f4; --panel: #ffffff; --panel-2: #f0f2ef; --line: #dfe3dd; --text: #1b211d; --muted: #6a736c;
+  --accent: #1d7a52; --accent-2: #e2b545; --danger: #c2413b; --warn: #b7791f; --ok: #1d7a52; --info: #2f6fc6;
+  --board-bg: #0f1512; --board-mask: #1f4a35; --on-accent: #fff; color-scheme: light;
+}
+
+/* Neon: black glass, hot pink and cyan, with glow. */
+:root[data-theme="neon"] {
+  --bg: #07050f; --panel: #0e0a1c; --panel-2: #160f2b; --line: #2c1d55; --text: #f1ecff; --muted: #9a8cc8;
+  --accent: #ff2bd6; --accent-2: #00f0ff; --danger: #ff3864; --warn: #ffe600; --ok: #39ff88; --info: #00f0ff;
+  --board-bg: #05030b; --board-mask: #1a0b35; --on-accent: #0b0414;
+  --shadow: 0 0 0 1px rgba(255,43,214,.25), 0 0 18px rgba(255,43,214,.18); color-scheme: dark;
+}
+[data-theme="neon"] .btn.primary, [data-theme="neon"] .msg.user { box-shadow: 0 0 12px rgba(255,43,214,.7), 0 0 28px rgba(255,43,214,.35); }
+[data-theme="neon"] .btn:hover, [data-theme="neon"] .chip.toggle.on, [data-theme="neon"] .stepper li.sel { box-shadow: 0 0 10px rgba(0,240,255,.45); border-color: var(--accent-2); }
+[data-theme="neon"] .brand span, [data-theme="neon"] .hero h1 { color: var(--accent-2); text-shadow: 0 0 8px rgba(0,240,255,.8), 0 0 22px rgba(0,240,255,.4); }
+[data-theme="neon"] .chip.ok::before, [data-theme="neon"] .stepper li.done .n::before { box-shadow: 0 0 8px var(--ok); }
+[data-theme="neon"] .chip.bad::before, [data-theme="neon"] .stepper li.error .n::before { box-shadow: 0 0 8px var(--danger); }
+
+/* Greyscale: no colour anywhere, pictures included. */
+:root[data-theme="greyscale"] {
+  --bg: #121212; --panel: #1b1b1b; --panel-2: #242424; --line: #363636; --text: #ececec; --muted: #9a9a9a;
+  --accent: #d6d6d6; --accent-2: #a8a8a8; --danger: #ffffff; --warn: #b0b0b0; --ok: #d6d6d6; --info: #8a8a8a;
+  --board-bg: #0c0c0c; --board-mask: #2e2e2e; --on-accent: #111; --shadow: 0 1px 2px rgba(0,0,0,.4); color-scheme: dark;
+}
+[data-theme="greyscale"] canvas, [data-theme="greyscale"] img, [data-theme="greyscale"] iframe { filter: grayscale(1); }
+[data-theme="greyscale"] .err { font-weight: 600; text-decoration: underline dotted; }
+
+/* Ocean: deep navy with teal and coral. */
+:root[data-theme="ocean"] {
+  --bg: #0a1420; --panel: #0f1c2c; --panel-2: #142538; --line: #1f3550; --text: #e3eef8; --muted: #8aa2ba;
+  --accent: #22b8c9; --accent-2: #ff8a65; --danger: #ff6b6b; --warn: #ffc15e; --ok: #3ddc97; --info: #5aa9ff;
+  --board-bg: #07101a; --board-mask: #12406a; --on-accent: #04121a; --shadow: 0 1px 2px rgba(0,0,0,.35); color-scheme: dark;
+}
+
+/* Purple mask: the solder-mask colour, with yellow silkscreen. */
+:root[data-theme="purple"] {
+  --bg: #120c1a; --panel: #1a1225; --panel-2: #231831; --line: #362547; --text: #efe6fa; --muted: #a291b8;
+  --accent: #a970ff; --accent-2: #ffd166; --danger: #ff6b8a; --warn: #ffb547; --ok: #5ee0a0; --info: #7fb2ff;
+  --board-bg: #0d0814; --board-mask: #4a2370; --on-accent: #fff; --shadow: 0 1px 2px rgba(0,0,0,.35); color-scheme: dark;
+}
+
+/* Amber terminal: a retro phosphor screen. */
+:root[data-theme="amber"] {
+  --bg: #0b0700; --panel: #120c02; --panel-2: #1a1204; --line: #3a2808; --text: #ffcc66; --muted: #b3873a;
+  --accent: #ffb000; --accent-2: #ff7a00; --danger: #ff5a36; --warn: #ffd23f; --ok: #ffb000; --info: #ffd98a;
+  --board-bg: #080500; --board-mask: #2a1c04; --on-accent: #140c00; --shadow: 0 0 12px rgba(255,176,0,.08); color-scheme: dark;
+}
+[data-theme="amber"] body { font-family: var(--mono); }
+[data-theme="amber"] .brand span, [data-theme="amber"] .hero h1 { text-shadow: 0 0 6px rgba(255,176,0,.6); }
+
+/* Blueprint: drafting-paper blue with white lines. */
+:root[data-theme="blueprint"] {
+  --bg: #0b3a78; --panel: #0e4489; --panel-2: #12509e; --line: #3d73b8; --text: #f2f7ff; --muted: #b5cbea;
+  --accent: #ffffff; --accent-2: #ffe27a; --danger: #ff9a8a; --warn: #ffe27a; --ok: #9dffc8; --info: #bfe0ff;
+  --board-bg: #082c5c; --board-mask: #0f4f9a; --on-accent: #0b3a78; --shadow: none; color-scheme: dark;
+}
+[data-theme="blueprint"] body {
+  background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Copper: a warm light theme. */
+:root[data-theme="copper"] {
+  --bg: #faf5ee; --panel: #fffdf9; --panel-2: #f4ece1; --line: #e6d8c6; --text: #2b1d12; --muted: #85705c;
+  --accent: #b5592a; --accent-2: #2d7d7a; --danger: #c0392b; --warn: #b7791f; --ok: #2f7d4e; --info: #2f6fc6;
+  --board-bg: #1c130c; --board-mask: #6b3a1c; --on-accent: #fff; color-scheme: light;
+}
+
+/* Arctic: a cool, crisp light theme. */
+:root[data-theme="arctic"] {
+  --bg: #eef3f8; --panel: #ffffff; --panel-2: #e6edf5; --line: #d3dde8; --text: #14202c; --muted: #637487;
+  --accent: #2563eb; --accent-2: #0ea5a4; --danger: #dc2626; --warn: #c2780a; --ok: #15803d; --info: #2563eb;
+  --board-bg: #101820; --board-mask: #1d3b5c; --on-accent: #fff; color-scheme: light;
+}

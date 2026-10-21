@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WholeBoard</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/themes.css">
+<script>try { const t = localStorage.getItem("wb-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#" id="homeLink"><img src="/static/icon.svg" alt=""><span>WholeBoard</span></a>
+  <div class="status-chips" id="statusChips"></div>
+  <div class="spacer"></div>
+  <label class="theme-pick" title="Colour theme"><span class="muted">Theme</span>
+    <select id="themeSelect">
+      <option value="auto">Green &amp; gold (match system)</option>
+      <option value="green-gold-dark">Green &amp; gold dark</option>
+      <option value="green-gold-light">Green &amp; gold light</option>
+      <option value="neon">Neon</option>
+      <option value="greyscale">Greyscale</option>
+      <option value="ocean">Ocean</option>
+      <option value="purple">Purple mask</option>
+      <option value="amber">Amber terminal</option>
+      <option value="blueprint">Blueprint</option>
+      <option value="copper">Copper (light)</option>
+      <option value="arctic">Arctic (light)</option>
+    </select>
+  </label>
+  <button class="btn ghost" id="newBtn" type="button">+ New board</button>
+  <button class="btn ghost" id="settingsBtn" type="button">⚙ Settings</button>
+</header>
+
+<div class="layout">
+  <aside class="sidebar">
+    <h3>Boards</h3>
+    <ul id="projectList" class="project-list"></ul>
+  </aside>
+
+  <main>
+    <section id="home" class="home">
+      <div class="hero">
+        <h1>Describe a board. Get it designed, routed, quoted and boxed.</h1>
+        <p>WholeBoard works with your AI, KiCad, TraceMaker and FreeCAD to design a PCB from a plain
+          description. It asks you what it needs to know, prices the build at JLCPCB and designs a
+          3D-printable enclosure.</p>
+        <form id="promptForm" class="prompt">
+          <textarea id="prompt" rows="5" placeholder="For example: A small USB-C powered board with an ESP32-C3, a BME280 sensor on I²C, two status LEDs and a 4-pin header for a fan. About 40 × 30 mm."></textarea>
+          <div class="prompt-row">
+            <div class="examples" id="examples"></div>
+            <label class="btn" for="importFile" title="Start from an existing KiCad schematic and board: pick the .kicad_sch (and .kicad_pcb) files, or a zip of the project folder">Import KiCad project…</label>
+            <input type="file" id="importFile" multiple accept=".kicad_sch,.kicad_pcb,.kicad_pro,.zip" hidden>
+            <button class="btn primary" type="submit">Design it →</button>
+          </div>
+        </form>
+      </div>
+      <div class="setup card" id="setup"></div>
+    </section>
+
+    <section id="workspace" class="workspace" hidden>
+      <div class="ws-head">
+        <div class="ws-title"><h2 id="wsTitle"></h2><span class="pill" id="wsStatus"></span><span class="muted" id="wsNote"></span><span class="chip" id="wsUsage" hidden></span></div>
+        <div class="ws-actions">
+          <button class="btn ghost" id="historyBtn" type="button" title="Every build of this board: compare two or rebuild an old one">History</button>
+          <button class="btn ghost" id="editSpecBtn" type="button">Edit design JSON</button>
+          <button class="btn ghost" id="folderBtn" type="button">Open folder</button>
+          <button class="btn danger" id="stopBtn" type="button">Stop</button>
+          <button class="btn ghost" id="deleteBtn" type="button" title="Delete this board and its files">Delete</button>
+        </div>
+      </div>
+      <div class="ws-body">
+        <div class="chat-pane">
+          <div id="chat" class="chat"></div>
+          <form id="chatForm" class="chat-form">
+            <textarea id="chatInput" rows="2" placeholder="Message the designer… (Enter to send, Shift+Enter for a new line)"></textarea>
+            <button class="btn primary" type="submit">Send</button>
+          </form>
+        </div>
+        <div class="stage-pane">
+          <ol id="stepper" class="stepper"></ol>
+          <div id="stage" class="stage"></div>
+          <details id="logBox" class="logbox">
+            <summary>Tool output <span id="logStep" class="muted"></span></summary>
+            <pre id="log"></pre>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="settings" class="modal">
+  <form method="dialog" id="settingsForm">
+    <h2>Settings</h2>
+    <div class="tabs" id="settingsTabs">
+      <button type="button" data-tab="ai" class="on">AI</button>
+      <button type="button" data-tab="tools">KiCad &amp; TraceMaker</button>
+      <button type="button" data-tab="jlc">JLCPCB</button>
+      <button type="button" data-tab="net">Network</button>
+    </div>
+    <div class="tab" data-tab="ai">
+      <label>Provider
+        <select name="ai.provider">
+          <option value="anthropic">Claude (Anthropic cloud)</option>
+          <option value="openai">OpenAI-compatible (local: Ollama, LM Studio, llama.cpp · or cloud)</option>
+        </select>
+      </label>
+      <div data-show="ai.provider=anthropic">
+        <label>Anthropic API key <input name="ai.anthropic_api_key" type="password" autocomplete="off" placeholder="sk-ant-… (or set ANTHROPIC_API_KEY)"></label>
+        <label>Model <span class="with-btn"><input name="ai.anthropic_model" list="claudeModels"><button class="btn" type="button" data-list-models="claudeModels">List models</button></span></label>
+        <datalist id="claudeModels"><option value="claude-opus-5-5"><option value="claude-fable-5-1"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"></datalist>
+        <label>Effort
+          <select name="ai.anthropic_effort"><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
+        </label>
+      </div>
+      <div data-show="ai.provider=openai">
+        <div class="presets"><span class="muted">Quick setup:</span>
+          <button class="btn" type="button" data-preset="https://api.openai.com/v1">OpenAI</button>
+          <button class="btn" type="button" data-preset="https://api.x.ai/v1">Grok (xAI)</button>
+          <button class="btn" type="button" data-preset="http://localhost:11434/v1">Ollama</button>
+          <button class="btn" type="button" data-preset="http://localhost:1234/v1">LM Studio</button>
+          <button class="btn" type="button" data-preset="http://localhost:8080/v1">llama.cpp</button>
+        </div>
+        <label>Server URL <input name="ai.openai_base_url" placeholder="http://localhost:11434/v1"></label>
+        <label>API key <input name="ai.openai_api_key" type="password" autocomplete="off" placeholder="sk-… for OpenAI, xai-… for Grok, empty for local servers"></label>
+        <label>Model <span class="with-btn"><input name="ai.openai_model" list="openaiModels" placeholder="click List models"><button class="btn" type="button" data-list-models="openaiModels">List models</button></span></label>
+        <div class="grid2">
+          <label>Price per million input tokens (US$) <input name="ai.openai_price_in" type="number" min="0" step="0.01" placeholder="0 for local models"></label>
+          <label>Price per million output tokens (US$) <input name="ai.openai_price_out" type="number" min="0" step="0.01"></label>
+        </div>
+        <datalist id="openaiModels"></datalist>
+        <p class="hint">The model must support tool calling. Larger models design better boards.</p>
+      </div>
+      <p id="modelsOut" class="muted"></p>
+      <details class="help">
+        <summary>How to get an API key for Claude, OpenAI or Grok</summary>
+        <div class="help-body">
+          <h4>Claude (Anthropic)</h4>
+          <ol>
+            <li>Sign in to the <a href="https://platform.claude.com/" target="_blank" rel="noopener">Claude Console</a>. A claude.ai chat subscription does not include API use, which is billed separately.</li>
+            <li>Add a payment method or buy credits under <b>Settings → Billing</b>.</li>
+            <li>Open <b>Settings → API keys</b> and click <b>Create key</b>. Copy it straight away, because it is shown only once. It starts with <code>sk-ant-</code>.</li>
+            <li>Here, choose <b>Claude (Anthropic cloud)</b> as the provider, paste the key and click <b>Save</b>, then <b>Test connection</b>.</li>
+          </ol>
+          <p class="muted">Instead of pasting the key, you can set <code>ANTHROPIC_API_KEY</code> before starting WholeBoard. <a href="https://platform.claude.com/docs/en/get-api-key" target="_blank" rel="noopener">Anthropic's guide</a></p>
+
+          <h4>OpenAI</h4>
+          <ol>
+            <li>Sign in to the <a href="https://platform.openai.com/" target="_blank" rel="noopener">OpenAI platform</a> and add credits on its billing page.</li>
+            <li>Open the <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">API keys page</a> and click <b>Create new secret key</b>. Copy it straight away. It starts with <code>sk-</code>.</li>
+            <li>Here, choose <b>OpenAI-compatible</b> as the provider and click the <b>OpenAI</b> quick-setup button.</li>
+            <li>Paste the key, click <b>Save</b>, then <b>List models</b> and pick a current GPT model. Click <b>Test connection</b>.</li>
+          </ol>
+          <p class="muted">Instead of pasting the key, you can set <code>OPENAI_API_KEY</code> before starting WholeBoard.</p>
+
+          <h4>Grok (xAI)</h4>
+          <ol>
+            <li>Sign in to the <a href="https://console.x.ai/" target="_blank" rel="noopener">xAI Console</a> and add credits.</li>
+            <li>Open its <b>API Keys</b> page and create a key. Copy it straight away. It starts with <code>xai-</code>.</li>
+            <li>Here, choose <b>OpenAI-compatible</b> as the provider and click the <b>Grok (xAI)</b> quick-setup button.</li>
+            <li>Paste the key, click <b>Save</b>, then <b>List models</b> and pick a Grok model. Click <b>Test connection</b>.</li>
+          </ol>
+          <p class="muted">Instead of pasting the key, you can set <code>XAI_API_KEY</code> before starting WholeBoard. <a href="https://docs.x.ai/docs/tutorial" target="_blank" rel="noopener">xAI's guide</a></p>
+
+          <h4>Keeping keys safe</h4>
+          <ul>
+            <li>WholeBoard stores keys in <code>~/.wholeboard/config.json</code>, readable only by your user account. Saved keys are never sent back to the page.</li>
+            <li>Every design run spends credit on your account. Set a monthly spending limit in the provider's console.</li>
+            <li>If you share WholeBoard on your network, everyone who opens it uses your key.</li>
+            <li>If a key leaks, delete it in the provider's console and create a new one.</li>
+          </ul>
+        </div>
+      </details>
+      <label>Turn limit per run <input name="ai.max_turns" type="number" min="5" max="400"></label>
+      <label>Visual review of the board renders
+        <select name="ai.vision">
+          <option value="auto">Automatic (Claude and known vision models)</option>
+          <option value="on">On (my model can read images)</option>
+          <option value="off">Off</option>
+        </select></label>
+      <div class="row"><button class="btn" type="button" id="aiTestBtn">Test connection</button><span id="aiTestOut" class="muted"></span></div>
+    </div>
+    <div class="tab" data-tab="tools" hidden>
+      <p class="hint">Leave paths empty to detect them automatically.</p>
+      <label>kicad-cli <input name="tools.kicad_cli" placeholder="auto"></label>
+      <label>tracemaker <input name="tools.tracemaker" placeholder="auto"></label>
+      <label>tracemaker-place <input name="tools.tracemaker_place" placeholder="auto"></label>
+      <label class="check"><input type="checkbox" name="tools.tracemaker_wsl"> Run TraceMaker inside WSL (Windows)</label>
+      <label>Footprint library folder <input name="tools.footprint_dir" placeholder="auto"></label>
+      <label>Symbol library folder <input name="tools.symbol_dir" placeholder="auto"></label>
+      <label>FreeCAD (for enclosures) <input name="tools.freecad" placeholder="auto: freecadcmd, FreeCAD.app or an AppImage"></label>
+      <label>ngspice (for simulation) <input name="tools.ngspice" placeholder="auto: ngspice, or KiCad's own libngspice"></label>
+      <div class="grid2">
+        <label>3D part models <select name="tools.models3d">
+          <option value="auto">Download missing models from KiCad and EasyEDA</option>
+          <option value="local">Only models already installed</option>
+          <option value="off">Off (bare boards, estimated heights)</option>
+        </select></label>
+        <label>Extra 3D model folder <input name="tools.models3d_dir" placeholder="auto: KiCad's 3dmodels folder"></label>
+      </div>
+      <div class="grid2">
+        <label>Routing time limit (s) <input name="tools.route_time_s" type="number" min="10"></label>
+        <label>Placement time limit (s) <input name="tools.place_time_s" type="number" min="10"></label>
+      </div>
+      <label class="check"><input type="checkbox" name="tools.live_viewer"> Show TraceMaker's live router view</label>
+      <div class="row">
+        <button class="btn" type="button" data-fetch="gitlab">Download KiCad libraries</button>
+        <button class="btn" type="button" data-fetch="docker">Copy libraries from KiCad Docker image</button>
+        <button class="btn" type="button" id="freecadFetch">Download FreeCAD</button>
+        <button class="btn" type="button" id="ngspiceFetch">Install ngspice</button>
+      </div>
+      <pre id="libOut" class="mini-log"></pre>
+    </div>
+    <div class="tab" data-tab="jlc" hidden>
+      <div class="grid2">
+        <label>PCB quantity <input name="jlcpcb.quantity" type="number" min="1"></label>
+        <label>Boards assembled <input name="jlcpcb.assembly_quantity" type="number" min="1"></label>
+      </div>
+      <label class="check"><input type="checkbox" name="jlcpcb.assembly"> Include PCB assembly (PCBA)</label>
+      <div class="grid2">
+        <label>Assembly type <select name="jlcpcb.pcba_type"><option value="economic">Economic</option><option value="standard">Standard</option></select></label>
+        <label>Surface finish <select name="jlcpcb.surface_finish"><option>HASL(with lead)</option><option>LeadFree HASL</option><option>ENIG</option></select></label>
+        <label>Solder mask <select name="jlcpcb.solder_mask"><option>Green</option><option>Red</option><option>Yellow</option><option>Blue</option><option>White</option><option>Black</option><option>Purple</option></select></label>
+        <label>Shipping <select name="jlcpcb.shipping_method"><option>Global Standard Direct</option><option>DHL Express</option><option>FedEx International</option></select></label>
+        <label>Ship to (country code) <input name="jlcpcb.shipping_country" maxlength="3"></label>
+      </div>
+      <p class="hint">Fab and assembly fees come from an editable price table (wholeboard/jlc/pricing.json). Part prices and stock are live from JLCPCB.</p>
+      <h3>3D printing the enclosure</h3>
+      <div class="grid2">
+        <label>Material <select name="printing.material"><option>PLA</option><option>PETG</option><option>ABS</option><option>ASA</option><option>TPU</option></select></label>
+        <label>Filament price per kg <input name="printing.price_per_kg" type="number" min="0" step="0.5"></label>
+        <label>Printer speed (cm³ per hour) <input name="printing.rate_cm3_h" type="number" min="1" step="1" title="About 25 for a Bambu Lab or Prusa MK4, 10 for an older Ender"></label>
+        <label>Printer power (W) <input name="printing.power_w" type="number" min="0" step="10"></label>
+        <label>Electricity price per kWh <input name="printing.price_kwh" type="number" min="0" step="0.01"></label>
+        <label>Machine cost per hour <input name="printing.machine_per_h" type="number" min="0" step="0.1" title="Wear and tear, or a print service's rate; 0 to leave out"></label>
+      </div>
+    </div>
+    <div class="tab" data-tab="net" hidden>
+      <p class="hint">Start WholeBoard with <code>--host 0.0.0.0</code> to use it from other computers on your network.
+        A password stops anyone else on the network from using it (and your AI key). This computer never needs it.</p>
+      <p id="netState" class="pins"></p>
+      <label>New password <input type="password" id="netPassword" autocomplete="new-password" placeholder="at least 6 characters"></label>
+      <div class="row">
+        <button class="btn" type="button" id="netSet">Set password</button>
+        <button class="btn ghost" type="button" id="netClear">Remove password</button>
+        <span class="muted" id="netMsg"></span>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost" value="cancel" type="submit">Close</button>
+      <button class="btn primary" id="saveSettings" type="button">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="specDialog" class="modal wide">
+  <form method="dialog">
+    <h2 id="specTitle">Design JSON</h2>
+    <p class="hint" id="specHint">Edit the design and rebuild it without the AI. The same checks run first.</p>
+    <textarea id="specText" spellcheck="false"></textarea>
+    <p id="specErr" class="err"></p>
+    <div class="modal-actions">
+      <button class="btn ghost" value="cancel" type="submit">Close</button>
+      <button class="btn primary" id="specSave" type="button">Rebuild</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="historyDialog" class="modal wide">
+  <form method="dialog">
+    <h2>Revision history</h2>
+    <p class="hint">Every build is kept. Tick two revisions to compare them, or rebuild an old one as a new revision.</p>
+    <div id="historyList" class="rev-list"></div>
+    <div id="historyCompare"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" value="cancel" type="submit">Close</button>
+      <button class="btn" id="historyCompareBtn" type="button" disabled>Compare ticked</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/board.js"></script>
+<script src="/static/mesh3d.js"></script>
+<script src="/static/plot.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

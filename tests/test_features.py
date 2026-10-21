@@ -1,0 +1,193 @@
+"""Tests for the 3D models, cost cutting, import, history, firmware, password, panel and print features."""
+import io
+import zipfile
+
+import pytest
+
+from wholeboard import auth, config, enclosure, firmware, models3d, revisions
+from wholeboard.ai.providers import turn_cost
+from wholeboard.jlc import panel, savings
+from wholeboard.kicad import importer
+
+
+@pytest.fixture
+def own_config(tmp_path, monkeypatch):
+    """Keep password tests away from the real ~/.wholeboard/config.json."""
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+
+
+# ---------------------------------------------------------------- 3D models
+def test_model_rel_path():
+    assert models3d.rel_path("${KICAD10_3DMODEL_DIR}/Package_SO.3dshapes/SOIC-8_3.9x4.9mm.wrl") == \
+        "Package_SO.3dshapes/SOIC-8_3.9x4.9mm.step"
+    assert models3d.rel_path("model.step") is None
+
+
+def test_step_bbox_reads_exponents(tmp_path, monkeypatch):
+    monkeypatch.setattr(models3d, "CACHE", tmp_path / "cache")
+    f = tmp_path / "x.step"
+    f.write_text("ISO-10303-21;\n#1 = CARTESIAN_POINT('',(0.,0.,0.));\n#2 = CARTESIAN_POINT('',(-0.8,-0.4,3.E-02));\n"
+                 "#3 = CARTESIAN_POINT('',(0.8,0.4,0.77));\n")
+    assert models3d.step_bbox(f) == [-0.8, -0.4, 0.0, 0.8, 0.4, 0.77]
+
+
+def test_model_height_follows_rotation(tmp_path, monkeypatch):
+    monkeypatch.setattr(models3d, "CACHE", tmp_path / "cache")
+    f = tmp_path / "Lib.3dshapes" / "Part.step"
+    f.parent.mkdir()
+    f.write_text("#1 = CARTESIAN_POINT('',(-1.,-5.,0.));\n#2 = CARTESIAN_POINT('',(1.,5.,2.));\n")
+    monkeypatch.setattr(models3d, "local", lambda rel: f)
+    flat = {"path": "${X}/Lib.3dshapes/Part.step"}
+    assert models3d.model_height(flat) == 2.0
+    # Stood up on its end: the 10 mm length becomes the height.
+    assert models3d.model_height({**flat, "rotate": [90, 0, 0]}) == 5.0
+    assert models3d.model_height({**flat, "offset": [0, 0, 1.5]}) == 3.5
+
+
+# ---------------------------------------------------------------- cheaper parts
+def test_passive_detection():
+    line = {"refs": ["R3"], "footprint": "R_0603_1608Metric", "value": "4k7"}
+    assert savings._passive(line, {"value": "4k7"}) == ("resistor", "4k7", "0603")
+    led = {"refs": ["D1"], "footprint": "LED_0805_2012Metric", "value": "LED"}
+    assert savings._passive(led, {"value": "Red LED"}) == ("led", "red", "0805")
+    assert savings._passive({"refs": ["U1"], "footprint": "SOIC-8_3.9x4.9mm_P1.27mm"}, {}) is None
+
+
+def test_capacitor_swap_keeps_voltage_rating():
+    old = {"description": "100nF 50V X7R 0603"}
+    assert savings._fits(old, {"description": "100nF 50V X7R"}, "capacitor", {})
+    assert not savings._fits(old, {"description": "100nF 16V X7R"}, "capacitor", {})
+    assert not savings._fits({"description": "10k ±1% 0603"}, {"description": "10k ±5%"}, "resistor", {})
+
+
+def test_apply_swaps():
+    spec = {"components": [{"ref": "R1", "lcsc": "C1", "mpn": "X"}, {"ref": "R2", "lcsc": "C1"}]}
+    assert savings.apply(spec, [{"refs": ["R1", "R2"], "lcsc": "c25804"}, {"refs": ["R1"], "lcsc": "bad"}]) == ["R1", "R2"]
+    assert spec["components"][0] == {"ref": "R1", "lcsc": "C25804"}
+
+
+# ---------------------------------------------------------------- import
+def test_upload_refuses_escaping_paths(tmp_path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("proj/board.kicad_sch", "x")
+        z.writestr("../evil.txt", "x")
+    with pytest.raises(ValueError):
+        importer.save_upload([("p.zip", buf.getvalue())], tmp_path / "in")
+    assert not (tmp_path / "evil.txt").exists()
+    files = importer.save_upload([("C:\\Users\\me\\board.kicad_pcb", b"x")], tmp_path / "ok")
+    assert files == [tmp_path / "ok" / "board.kicad_pcb"]
+
+
+def test_net_names():
+    used = set()
+    assert importer._net_name("/LED_A", used) == "LED_A"
+    assert importer._net_name("Net-(R1-Pad2)", used) == "N_R1-Pad2"
+    assert importer._net_name("/LED A", used) == "LED_A_2"
+
+
+# ---------------------------------------------------------------- history
+def test_compare_revisions():
+    a = {"board": {"width_mm": 40}, "components": [{"ref": "R1", "value": "10k"}, {"ref": "R2", "value": "1k"}],
+         "nets": [{"name": "A", "pins": ["R1.1", "R2.1"]}]}
+    b = {"board": {"width_mm": 45}, "components": [{"ref": "R1", "value": "4k7"}, {"ref": "C1", "value": "100n"}],
+         "nets": [{"name": "A", "pins": ["R1.1", "C1.1"]}]}
+    d = revisions.compare(a, b)
+    assert [p["ref"] for p in d["parts_added"]] == ["C1"] and [p["ref"] for p in d["parts_removed"]] == ["R2"]
+    assert d["parts_changed"] == [{"ref": "R1", "changes": {"value": ["10k", "4k7"]}}]
+    assert d["nets_changed"] == [{"net": "A", "added": ["C1.1"], "removed": ["R2.1"]}]
+    text = revisions.brief(d)
+    assert "R1 value 10k → 4k7" in text and "board width 40 → 45" in text
+
+
+# ---------------------------------------------------------------- firmware
+def test_gpio_names():
+    assert firmware._gpio("esp32", ["IO4"]) == 4
+    assert firmware._gpio("esp32", ["SENSOR_VP"]) == 36
+    assert firmware._gpio("rp2040", ["GPIO26_ADC0"]) == 26
+    assert firmware._gpio("stm32", ["PA5"]) == "PA5"
+    assert firmware._gpio("atmega328", ["PC0"]) == "A0"
+    assert firmware._gpio("atmega328", ["XTAL1", "PB6"]) is None
+
+
+def test_firmware_project(tmp_path):
+    spec = {"name": "t", "components": [
+        {"ref": "U1", "value": "RP2040", "symbol": "MCU_RaspberryPi:RP2040", "footprint": "x"},
+        {"ref": "SW1", "value": "button", "footprint": "x"}],
+        "nets": [{"name": "GND", "pins": ["U1.19", "SW1.2"]}, {"name": "BTN_A", "pins": ["U1.2", "SW1.1"]}]}
+    out = firmware.generate(spec, tmp_path / "fw")
+    if not out["pins"]:
+        pytest.skip("KiCad symbol library not available")
+    assert out["family"] == "RP2040"
+    pins = (tmp_path / "fw" / "include" / "pins.h").read_text()
+    assert "#define PIN_BTN_A" in pins and "GPIO0" in pins
+    assert "INPUT_PULLUP" in (tmp_path / "fw" / "src" / "main.cpp").read_text()
+
+
+# ---------------------------------------------------------------- password
+def test_password_hash_and_tokens(own_config):
+    h = auth.hash_password("hunter22")
+    assert auth.check_password("hunter22", h) and not auth.check_password("hunter23", h)
+    auth.set_password("hunter22")
+    t = auth.make_token()
+    assert auth.valid_token(t) and not auth.valid_token(t[:-1] + "0") and not auth.valid_token("1.abc")
+    auth.set_password("another1")              # changing it signs everyone out
+    assert not auth.valid_token(t)
+    auth.set_password(None)
+    assert not auth.enabled()
+
+
+def test_middleware_guards_remote_clients(own_config):
+    from fastapi.testclient import TestClient
+    from wholeboard import server
+    c = TestClient(server.app)
+    auth.set_password("secret123")
+    try:
+        assert c.get("/api/config").status_code == 401
+        assert c.post("/api/login", data={"password": "secret123"}, follow_redirects=False).status_code == 303
+        assert c.get("/api/config").status_code == 200
+        assert c.post("/api/auth/password", json={"password": ""}).status_code == 403
+    finally:
+        auth.set_password(None)
+
+
+# ---------------------------------------------------------------- panel, print, usage
+def test_panel_suggested_when_cheaper():
+    from wholeboard.jlc import quote
+    spec = {"name": "t", "board": {"width_mm": 42, "height_mm": 26, "layers": 2, "corner_radius_mm": 0},
+            "components": [], "nets": []}
+    q = quote.full_quote(spec, {"quantity": 50, "assembly": False})
+    po = q["panel_options"]
+    r = po["recommended"]
+    assert r and r["boards"] >= 50 and r["pcb_cost"] < po["single"]["pcb_cost"] and r["method"] == "V-cut"
+    assert all(50 <= l["boards"] <= 200 for l in po["layouts"])
+    q2 = quote.full_quote(spec, {"quantity": 50, "assembly": False, "panel": {"nx": r["nx"], "ny": r["ny"]}})
+    assert q2["panel"]["boards_per_panel"] == r["nx"] * r["ny"] and q2["pcb"]["subtotal"] == r["pcb_cost"]
+    assert panel.layout(20, 15, 2, 2, True)["width_mm"] == 42.0
+
+
+def test_print_estimate():
+    e = enclosure.print_estimate(30_000, {"price_per_kg": 20, "rate_cm3_h": 15})
+    assert e["grams"] == pytest.approx(30 * 1.24 * 1.03, abs=0.1)
+    assert e["hours"] == pytest.approx(2.3, abs=0.01)
+    assert e["filament_cost"] == pytest.approx(e["grams"] / 1000 * 20, abs=0.01)
+
+
+def test_snap_lid_validates():
+    ctx = {"board": {"width_mm": 40, "height_mm": 30, "thickness_mm": 1.6, "corner_radius_mm": 0},
+           "parts": [], "mounting_holes": []}
+    errors, _ = enclosure.validate({"lid": {"type": "snap"}}, ctx)
+    assert not any("lid.type" in e for e in errors)
+    errors, _ = enclosure.validate({"lid": {"type": "glue"}}, ctx)
+    assert any("lid.type" in e for e in errors)
+
+
+def test_turn_cost():
+    usage = {"input": 1_000_000, "output": 100_000, "cache_read": 2_000_000}
+    assert turn_cost("claude-opus-5-5", usage, {"provider": "anthropic"}) == pytest.approx(4 + 2 + 0.4)
+    assert turn_cost("claude-unknown", usage, {"provider": "anthropic"}) is None
+    local = {"provider": "openai", "openai_base_url": "http://localhost:8080/v1"}
+    assert turn_cost("qwen", usage, local) == 0.0
+    paid = {"provider": "openai", "openai_base_url": "https://api.x.ai/v1", "openai_price_in": 3, "openai_price_out": 15}
+    assert turn_cost("grok", {"input": 1_000_000, "output": 0}, paid) == 3.0

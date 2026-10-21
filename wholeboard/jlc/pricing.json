@@ -1,0 +1,46 @@
+{
+  "_about": "JLCPCB price model used by WholeBoard's quote. JLCPCB does not publish a pricing formula or an open quoting API, so these values are calibrated against JLCPCB's public price pages and help articles. Edit them when JLCPCB changes its prices. Component prices are always fetched live.",
+  "last_checked": "2026-10-20",
+  "sources": [
+    "https://jlcpcb.com/help/article/pcb-assembly-price",
+    "https://jlcpcb.com/help/article/98-pcb-assembly-faqs",
+    "https://cart.jlcpcb.com/quote"
+  ],
+  "pcb": {
+    "promo": {
+      "1": {"max_w_mm": 100, "max_h_mm": 100, "max_qty": 10, "price": 2.0},
+      "2": {"max_w_mm": 100, "max_h_mm": 100, "max_qty": 10, "price": 2.0},
+      "4": {"max_w_mm": 100, "max_h_mm": 100, "max_qty": 10, "price": 7.0},
+      "6": {"max_w_mm": 100, "max_h_mm": 100, "max_qty": 5, "price": 37.0}
+    },
+    "engineering_fee": {"1": 4.0, "2": 4.0, "4": 15.0, "6": 35.0},
+    "per_m2": {"1": 28.0, "2": 32.0, "4": 75.0, "6": 150.0},
+    "min_price": {"1": 2.0, "2": 2.0, "4": 7.0, "6": 37.0},
+    "surface_finish": {
+      "HASL(with lead)": {"fixed": 0.0, "per_m2": 0.0},
+      "LeadFree HASL": {"fixed": 1.2, "per_m2": 3.0},
+      "ENIG": {"fixed": 13.2, "per_m2": 25.0}
+    },
+    "thickness_extra": {"0.6": 0.0, "0.8": 0.0, "1.0": 0.0, "1.2": 0.0, "1.6": 0.0, "2.0": 5.0},
+    "solder_mask_extra": {"Green": 0.0, "Red": 0.0, "Yellow": 0.0, "Blue": 0.0, "White": 0.0, "Black": 0.0, "Purple": 0.0}
+  },
+  "assembly": {
+    "economic": {
+      "setup": 8.0, "stencil": 1.5, "per_smd_joint": 0.0017,
+      "extended_part_fee": 3.0, "preferred_part_fee": 0.0,
+      "hand_solder_setup": 3.5, "per_tht_joint": 0.0173, "min_boards": 2
+    },
+    "standard": {
+      "setup": 25.0, "stencil": 7.86, "per_smd_joint": 0.0016,
+      "extended_part_fee": 3.0, "preferred_part_fee": 0.0,
+      "hand_solder_setup": 3.5, "per_tht_joint": 0.0173, "min_boards": 1
+    }
+  },
+  "shipping": {
+    "Global Standard Direct": {"first_kg": 2.5, "per_extra_kg": 6.0, "days": "8-15"},
+    "DHL Express": {"first_kg": 20.0, "per_extra_kg": 9.0, "days": "3-7"},
+    "FedEx International": {"first_kg": 19.0, "per_extra_kg": 9.0, "days": "3-7"}
+  },
+  "board_density_g_cm3": 1.85,
+  "packaging_g": 60
+}

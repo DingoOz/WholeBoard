@@ -1,0 +1,151 @@
+{
+ "name": "usb_led_3v3",
+ "summary": "USB-C powered 3.3 V regulator with a power LED and a 4-pin header.",
+ "board": {
+  "width_mm": 30,
+  "height_mm": 22,
+  "layers": 2,
+  "corner_radius_mm": 1.0,
+  "ground_pour": "GND"
+ },
+ "components": [
+  {
+   "ref": "J1",
+   "value": "USB_C_Power",
+   "footprint": "Connector_USB:USB_C_Receptacle_GCT_USB4125-xx-x-0190_6P_TopMnt_Horizontal",
+   "lcsc": "C2988369",
+   "description": "USB-C power-only receptacle",
+   "placement": {
+    "x_mm": 4.5,
+    "y_mm": 11,
+    "rotation": 270,
+    "locked": true
+   }
+  },
+  {
+   "ref": "R1",
+   "value": "5.1k",
+   "footprint": "Resistor_SMD:R_0603_1608Metric",
+   "lcsc": "C23186",
+   "symbol": "Device:R"
+  },
+  {
+   "ref": "R2",
+   "value": "5.1k",
+   "footprint": "Resistor_SMD:R_0603_1608Metric",
+   "lcsc": "C23186",
+   "symbol": "Device:R"
+  },
+  {
+   "ref": "U1",
+   "value": "AMS1117-3.3",
+   "footprint": "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
+   "lcsc": "C6186",
+   "symbol": "Regulator_Linear:AMS1117-3.3"
+  },
+  {
+   "ref": "C1",
+   "value": "10uF",
+   "footprint": "Capacitor_SMD:C_0805_2012Metric",
+   "lcsc": "C15850",
+   "symbol": "Device:C"
+  },
+  {
+   "ref": "C2",
+   "value": "22uF",
+   "footprint": "Capacitor_SMD:C_0805_2012Metric",
+   "lcsc": "C45783",
+   "symbol": "Device:C"
+  },
+  {
+   "ref": "R3",
+   "value": "1k",
+   "footprint": "Resistor_SMD:R_0603_1608Metric",
+   "lcsc": "C21190",
+   "symbol": "Device:R"
+  },
+  {
+   "ref": "D1",
+   "value": "Red",
+   "footprint": "LED_SMD:LED_0603_1608Metric",
+   "lcsc": "C2286",
+   "symbol": "Device:LED"
+  },
+  {
+   "ref": "J2",
+   "value": "Header 1x4",
+   "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical",
+   "lcsc": "C124378",
+   "placement": {
+    "x_mm": 26,
+    "y_mm": 7.2,
+    "rotation": 0,
+    "locked": true
+   },
+   "no_connect": [
+    "3"
+   ],
+   "symbol": "Connector:Conn_01x04_Pin"
+  }
+ ],
+ "nets": [
+  {
+   "name": "VBUS",
+   "class": "power",
+   "pins": [
+    "J1.A9",
+    "J1.B9",
+    "U1.3",
+    "C1.1",
+    "J2.1"
+   ]
+  },
+  {
+   "name": "GND",
+   "class": "power",
+   "pins": [
+    "J1.A12",
+    "J1.B12",
+    "J1.SH",
+    "R1.2",
+    "R2.2",
+    "U1.1",
+    "C1.2",
+    "C2.2",
+    "D1.1",
+    "J2.4"
+   ]
+  },
+  {
+   "name": "+3V3",
+   "class": "power",
+   "pins": [
+    "U1.2",
+    "C2.1",
+    "R3.1",
+    "J2.2"
+   ]
+  },
+  {
+   "name": "CC1",
+   "pins": [
+    "J1.A5",
+    "R1.1"
+   ]
+  },
+  {
+   "name": "CC2",
+   "pins": [
+    "J1.B5",
+    "R2.1"
+   ]
+  },
+  {
+   "name": "LED_K",
+   "pins": [
+    "R3.2",
+    "D1.2"
+   ]
+  }
+ ]
+}
