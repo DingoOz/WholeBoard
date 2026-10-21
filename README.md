@@ -1,5 +1,8 @@
 # WholeBoard
 
+> **🚧 Under construction.** WholeBoard is in active development. Expect rough edges, breaking
+> changes and boards that need a human check before you order them.
+
 An AI workbench for printed circuit boards. Describe the board you want in plain words.
 WholeBoard's designer agent asks you what it needs to know, picks real JLCPCB parts and KiCad
 footprints, writes the schematic and board, has **TraceMaker** place and route it, checks it with
@@ -9,6 +12,12 @@ Each step shows a visual you can inspect.
 
 Runs on Linux, macOS and Windows. It is a local web app: the server runs on your machine and the
 interface opens in your browser.
+
+![A finished board in WholeBoard: the designer's chat on the left, the routed board and KiCad DRC results on the right](docs/screenshots/board.png)
+
+![The simulation step: ngspice results for a 555 blinker, with rail and timing voltages plotted over time](docs/screenshots/simulation.png)
+
+![The enclosure step: a 3D preview of the FreeCAD-built box with its engraved lid lifted off the board](docs/screenshots/enclosure.png)
 
 ## What each step shows
 
@@ -245,3 +254,8 @@ Code map: `wholeboard/ai` (providers and the design agent), `wholeboard/kicad` (
 board and schematic writers, kicad-cli, geometry for the viewer), `wholeboard/router.py`
 (TraceMaker), `wholeboard/jlc` (parts and quote), `wholeboard/pipeline.py` (the build steps),
 `wholeboard/server.py` and `wholeboard/web` (API and interface).
+
+## Licence
+
+WholeBoard is free software under the GNU General Public License, version 3 or later. See
+[LICENSE](LICENSE).

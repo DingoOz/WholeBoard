@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "AI PCB design workbench: describe a board, get it designed in KiCad, routed by TraceMaker and quoted at JLCPCB"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "GPL-3.0-or-later" }
+classifiers = ["License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)"]
 dependencies = [
   "anthropic>=1.17",
   "openai>=1.40",
