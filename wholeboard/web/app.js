@@ -139,6 +139,7 @@ function handleEvent(e, replay) {
       if (!replay && e.status === "running" && S.follow) selectStep(e.key, false);
       break;
     case "log": addLog(e.step, e.text); break;
+    case "simlab": if (!replay && e.action === "video") { S.simlabVideo = true; S.follow = false; selectStep("sim", true); } break;
     case "visual":
       (S.visuals[e.step] ||= {})[e.kind] = e;
       if (e.kind === "viewer" && !replay) S.liveViewer = true;
@@ -304,6 +305,7 @@ function renderStage() {
   const vis = S.visuals[key] || {};
   const order = ["import", "viewer", "board", "svg", "erc", "sim", "power", "netlist", "drc", "checks", "impedance", "images", "files", "report", "bringup", "firmware", "review", "case", "enclosure", "quote"];
   const kinds = Object.keys(vis).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  if (key === "sim" && vis.sim?.result?.ran && S.visuals.outputs?.files) kinds.unshift("simlab");
   if (key === "route" && !S.liveViewer) { const i = kinds.indexOf("viewer"); if (i >= 0) kinds.splice(i, 1); }
   if (!kinds.length) {
     const st = S.project.steps[key] || {};
@@ -312,9 +314,13 @@ function renderStage() {
     return;
   }
   for (const kind of kinds) {
-    const v = vis[kind];
+    const v = vis[kind] || {};
     const fn = RENDER[kind];
-    if (fn) stage.append(fn(v));
+    if (!fn) continue;
+    const node = fn(v);
+    const first = node.nodeType === 11 ? node.firstElementChild : node;     // some renderers return several cards
+    if (first?.dataset) first.dataset.kind = kind;
+    stage.append(node);
   }
 }
 
@@ -440,6 +446,7 @@ const RENDER = {
   },
   enclosure(v) { return renderEnclosure(v); },
   sim(v) { return renderSim(v); },
+  simlab() { return renderSimLab(); },
   erc(v) {
     const r = v.report;
     const stat = (val, label, good) => el("div", { class: "stat " + (good ? "good" : "bad") }, el("div", { class: "v" }, val), el("div", { class: "l" }, label));
@@ -560,6 +567,159 @@ function renderPower(v) {
     b.thermal.map(t => [`${t.ref} ${t.value || ""}`, `${n3(t.power_mw)} mW`, `${Math.round(t.temp_c)} °C`,
       el("span", { class: t.margin_c < 20 ? "bad-text" : "" }, `${Math.round(t.margin_c)} °C below ${t.limit_c} °C`)])));
   return card(v.title, body);
+}
+
+// ------------------------------------------------------------------ Sim Lab
+function slValue(p, v) {
+  if (p.unit === "Ω") return slOhms(v);
+  if (p.marks) return `${Math.round(v)} W/m²K, ` + p.marks.reduce((a, m) => Math.abs(m[0] - v) < Math.abs(a[0] - v) ? m : a)[1];
+  if (p.unit === "V") return `${v.toFixed(2)} V`;
+  if (p.unit === "mA") return `${n3(v)} mA`;
+  if (p.unit === "oz") return `${v} oz`;
+  return `${Math.round(v)} ${p.unit}`;
+}
+
+function renderSimLab() {
+  const host = el("div", { class: "simlab-stage" });
+  const side = el("div", { class: "simlab-side" });
+  const tourBtn = el("button", { class: "btn", type: "button", disabled: true }, "▶ Play tour");
+  const recBtn = el("button", { class: "btn primary", type: "button", disabled: true }, "● Record video");
+  const c = card("Sim Lab: the simulation on the 3D board", el("div", { class: "simlab" }, host, side),
+    { fill: true, right: el("span", { class: "simlab-actions" }, tourBtn, recBtn) });
+  c.classList.add("simlab-card");
+  side.append(el("p", { class: "muted" }, "Loading the board and its simulation…"));
+  const key = `${S.pid}:${S.project.revision}`;
+  const st = S.simlab?.key === key ? S.simlab : (S.simlab = { key, values: {}, scene: null });
+  (st.scene ? Promise.resolve(st.scene) : api(`/api/projects/${S.pid}/simlab`)).then(scene => {
+    st.scene = scene;
+    if (!host.isConnected && !document.contains(c)) return;
+    buildSimLab(scene, st, host, side, tourBtn, recBtn);
+  }).catch(e => { side.innerHTML = ""; side.append(el("p", { class: "err" }, e.message)); });
+  return c;
+}
+
+function buildSimLab(scene, st, host, side, tourBtn, recBtn) {
+  const lab = new SimLab(host, scene, { onSelect: ref => { selRisk = null; selPart = ref; drawSide(); } });
+  if (!lab.gl) return;
+  let dyn = st.dyn || scene, selRisk = null, selPart = null, timer = null, busy = 0, touring = false;
+  const params = Object.fromEntries(scene.params.map(p => [p.id, p]));
+  const value = id => st.values[id] ?? params[id].value;
+  const status = el("p", { class: "simlab-status muted" }, "Click a risk or a part to see what changes it.");
+  const toggles = el("div", { class: "simlab-toggles" });
+  for (const [k, label] of [["flow", "Current flow"], ["heat", "Heat map"], ["glow", "LED glow"], ["labels", "Labels"]]) {
+    const b = el("button", { type: "button", class: "chip toggle" + (lab.show[k] ? " on" : "") }, label);
+    b.onclick = () => { lab.show[k] = !lab.show[k]; b.classList.toggle("on", lab.show[k]); lab.texDirty = true; };
+    toggles.append(b);
+  }
+  toggles.append(el("button", { type: "button", class: "chip", onclick: () => { lab.focusRefs = []; lab.sel = null; selRisk = selPart = null; lab.home(); drawSide(); } }, "Reset view"));
+  if (st.dyn) lab.update(st.dyn);
+  for (const id of ["airflow", "copper", "ambient"]) if (st.values[id] != null) lab.setLocal(id, st.values[id]);
+
+  const slider = p => {
+    const log = !!p.log, toPos = v => log ? Math.log(v / p.min) / Math.log(p.max / p.min) * 1000 : v;
+    const fromPos = x => log ? p.min * (p.max / p.min) ** (x / 1000) : +x;
+    const out = el("b", {}, slValue(p, value(p.id)));
+    const changed = value(p.id) !== p.value;
+    const inp = el("input", { type: "range", min: log ? 0 : p.min, max: log ? 1000 : p.max, step: log ? 1 : p.step, value: toPos(value(p.id)) });
+    inp.addEventListener("input", () => {
+      let v = fromPos(inp.value);
+      if (log) v = +v.toPrecision(2);
+      st.values[p.id] = v; out.textContent = slValue(p, v);
+      if (p.local || p.id === "ambient") lab.setLocal(p.id, v);
+      if (!p.local) resim();
+    });
+    return el("label", { class: "simlab-slider" + (changed ? " changed" : "") }, el("span", {}, p.label), out, inp);
+  };
+  const resim = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const values = Object.fromEntries(Object.entries(st.values).filter(([id]) => !params[id]?.local));
+      const t0 = performance.now(), mine = ++busy;
+      status.textContent = "Re-running the simulation…";
+      try {
+        const d = await api(`/api/projects/${S.pid}/simlab/whatif`, { method: "POST", body: { values } });
+        if (mine !== busy) return;
+        dyn = st.dyn = d; lab.update(d);
+        const probs = d.risks.filter(r => r.level === "problem").length;
+        status.textContent = `Re-simulated in ${((performance.now() - t0) / 1000).toFixed(1)} s: ` + (probs ? `${probs} problem${probs > 1 ? "s" : ""}` : "no problems") + ".";
+        drawRisks();
+      } catch (e) { status.textContent = "Simulation failed: " + e.message; }
+    }, 350);
+  };
+  const riskList = el("ul", { class: "simlab-risks" }), adjust = el("div");
+  const drawRisks = () => {
+    riskList.innerHTML = "";
+    if (!dyn.risks.length) riskList.append(el("li", { class: "muted" }, "Nothing to worry about. Try the sliders."));
+    for (const r of dyn.risks) {
+      const li = el("li", { class: `risk ${r.level}` + (selRisk === r.text ? " sel" : "") }, el("span", { class: "tag" }, r.level === "watch" ? "watch" : r.level), el("span", {}, r.text));
+      li.onclick = () => {
+        selRisk = r.text; selPart = null; lab.sel = null;
+        lab.focusRefs = r.refs;
+        if (/°C|heat|hot|dissipat/i.test(r.text)) { lab.show.heat = true; lab.show.flow = false; }
+        r.refs.length ? lab.focus(r.refs) : lab.home();
+        drawSide();
+      };
+      riskList.append(li);
+    }
+  };
+  const drawAdjust = () => {
+    adjust.innerHTML = "";
+    let ids = [], title = "";
+    const r = selRisk && dyn.risks.find(x => x.text === selRisk);
+    if (r) { ids = r.params; title = "What changes this"; }
+    else if (selPart) { ids = (dyn.links || scene.links || {})[selPart] || []; title = `${selPart}: ` + lab.describe(selPart).slice(1).join(" · "); }
+    const board = ["ambient", "airflow", "copper", ...scene.params.filter(p => p.id.startsWith("src:")).map(p => p.id)];
+    ids = ids.filter(id => params[id]);
+    if (title) adjust.append(el("h5", {}, title), ids.length ? el("div", {}, ids.map(id => slider(params[id])))
+      : el("p", { class: "muted" }, "No slider changes this part directly; try the supply and air below."));
+    adjust.append(el("h5", {}, "Board and air"), el("div", {}, board.filter(id => !ids.includes(id) && params[id]).map(id => slider(params[id]))));
+    const others = scene.params.filter(p => !board.includes(p.id) && !ids.includes(p.id));
+    if (others.length) adjust.append(el("details", {}, el("summary", {}, `Every part value (${others.length})`), others.map(slider)));
+    if (Object.keys(st.values).length) adjust.append(el("button", { class: "btn", type: "button", onclick: () => {
+      st.values = {}; st.dyn = null; dyn = scene; lab.update(scene);
+      for (const id of ["airflow", "copper", "ambient"]) lab.setLocal(id, params[id].value);
+      status.textContent = "Back to the design's own values."; drawSide();
+    } }, "Reset all values"));
+  };
+  const videos = el("div", { class: "simlab-videos" });
+  const drawSide = () => { drawRisks(); drawAdjust(); };
+  side.innerHTML = "";
+  side.append(toggles, status, el("h5", {}, "Risks and things to watch"), riskList, adjust, videos);
+  drawSide();
+
+  const whatif = values => api(`/api/projects/${S.pid}/simlab/whatif`, { method: "POST", body: { values: { ...st.values, ...values } } });
+  const runTour = async record => {
+    if (touring) { touring = false; return; }
+    touring = true;
+    tourBtn.textContent = "■ Stop"; recBtn.disabled = tourBtn.disabled = false;
+    if (record) { recBtn.disabled = true; tourBtn.disabled = true; }
+    const saved = { ...lab.show };
+    try {
+      if (record) lab.startRecording();
+      await slTour(lab, { whatif, stopped: () => !touring || !host.isConnected });
+      if (record) {
+        const blob = await lab.stopRecording();
+        status.textContent = "Saving the video…";
+        const local = URL.createObjectURL(blob), ext = blob.type.includes("mp4") ? "mp4" : "webm";
+        videos.innerHTML = "";
+        videos.append(el("h5", {}, "Your video"), el("video", { src: local, controls: true, class: "simlab-video" }));
+        try {
+          const r = await fetch(`/api/projects/${S.pid}/simlab/video`, { method: "POST", headers: { "Content-Type": blob.type }, body: blob }).then(x => x.json());
+          videos.append(el("div", { class: "files" }, (r.files || []).map(f => el("a", { class: "btn", href: f.url, download: f.name }, "⬇ " + f.name))));
+          status.textContent = "Video saved with the project's files.";
+        } catch (e) {
+          videos.append(el("a", { class: "btn", href: local, download: `simlab.${ext}` }, "⬇ Download video"));
+          status.textContent = "Could not save it on the server; download it here.";
+        }
+      }
+    } catch (e) { status.textContent = e.message; if (lab.rec) await lab.stopRecording(); }
+    lab.show = saved; lab.texDirty = true; touring = false;
+    tourBtn.textContent = "▶ Play tour"; tourBtn.disabled = recBtn.disabled = false;
+  };
+  tourBtn.disabled = recBtn.disabled = false;
+  tourBtn.onclick = () => runTour(false);
+  recBtn.onclick = () => runTour(true);
+  if (S.simlabVideo) { S.simlabVideo = false; setTimeout(() => runTour(true), 600); }
 }
 
 function firmwareBuild(v, f) {
@@ -910,6 +1070,7 @@ function init() {
   $("#homeLink").onclick = e => { e.preventDefault(); showHome(); };
   $("#newBtn").onclick = () => { showHome(); $("#prompt").focus(); };
   $("#settingsBtn").onclick = () => openSettings();
+  $("#tourBtn").onclick = () => startTour();
   $("#saveSettings").onclick = () => saveSettings();
   $("#settingsForm").querySelector('[name="ai.provider"]').onchange = syncShow;
   document.querySelectorAll("#settingsTabs button").forEach(b => b.onclick = () => {

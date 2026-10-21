@@ -222,6 +222,10 @@ TOOLS = [
           "enclosure_context). Returns sizes, openings, lid holes, collisions between parts and the box, "
           "and notes. Takes a few seconds.",
           {"enclosure": {"type": "object", "description": "The complete enclosure spec."}}, ["enclosure"]),
+    _tool("sim_lab_video", "When the user asks for a video or demo of the simulation: open the Sim Lab (the "
+          "simulation drawn on the finished 3D board: current flow, LED glow, a heat map and every risk) in the "
+          "user's browser and record a guided tour as a video. The video appears in the Simulate step.",
+          {}, []),
     _tool("finish", "Finish: the board is built, checked and quoted. Give the user a short summary.",
           {"summary": {"type": "string"}}, ["summary"]),
 ]
@@ -492,6 +496,17 @@ class Agent:
                 return json.dumps(pipeline.run_case(p, p.state["spec"]))
             res = pipeline.run_enclosure(p, p.state.get("spec") or {}, args.get("enclosure") or {})
             return json.dumps(res)
+        if name == "sim_lab_video":
+            if not (p.state.get("artifacts") or {}).get("pcb"):
+                return json.dumps({"error": "There is no finished board yet. Get a clean build first."})
+            if not p.listeners:
+                return json.dumps({"error": "No browser has this project open, so nothing can record the video. "
+                                            "Ask the user to open it and press Record video in the Simulate step."})
+            p.emit({"type": "simlab", "action": "video"})
+            p.emit({"type": "tool", "name": name, "text": "Recording a Sim Lab video in the browser"})
+            return json.dumps({"ok": True, "note": "The browser is recording a 30-45 s guided tour now; it shows up "
+                                                   "under the Sim Lab in the Simulate step when done. Tell the user "
+                                                   "they can also click any risk and use the sliders there."})
         if name == "finish":
             if p.state["steps"].get("enclosure", {}).get("status") == "pending":
                 p.step("enclosure", "done", "No enclosure")

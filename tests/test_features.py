@@ -131,7 +131,8 @@ def test_password_hash_and_tokens(own_config):
     assert auth.check_password("hunter22", h) and not auth.check_password("hunter23", h)
     auth.set_password("hunter22")
     t = auth.make_token()
-    assert auth.valid_token(t) and not auth.valid_token(t[:-1] + "0") and not auth.valid_token("1.abc")
+    tampered = t[:-1] + ("1" if t[-1] == "0" else "0")
+    assert auth.valid_token(t) and not auth.valid_token(tampered) and not auth.valid_token("1.abc")
     auth.set_password("another1")              # changing it signs everyone out
     assert not auth.valid_token(t)
     auth.set_password(None)

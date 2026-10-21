@@ -21,6 +21,10 @@ interface opens in your browser.
 
 ## What each step shows
 
+New to WholeBoard? Press **Take a tour** in the top bar: it walks through a normal workflow, from
+describing a board to the quote and enclosure, highlighting each part of the page in turn (on one
+of your own boards when you have one).
+
 | Step | What happens | Visual |
 |---|---|---|
 | Requirements | The AI reads your request and asks questions in the chat | Conversation |
@@ -29,6 +33,7 @@ interface opens in your browser.
 | Schematic & ERC | A KiCad schematic, one symbol per part, nets joined by labels, checked by KiCad's electrical rules check | Zoomable schematic, ERC findings |
 | Simulation | ngspice runs the circuit: rail voltages, currents, part ratings, heat, battery life, oscillator frequency, filter response | Plots, ratings table, the SPICE netlist |
 | Power budget | Current per supply and rail, regulator headroom and heat, battery life on a duty cycle | Budget meters, thermal table |
+| Sim Lab | The simulation on the finished 3D board: current flow, LED brightness, a heat map, every risk with sliders that re-run ngspice | Interactive 3D view, guided tour, recorded video |
 | Board & footprints | Outline, mounting holes, footprints with nets | Board view |
 | Placement | `tracemaker-place` places the parts | Board view with air wires |
 | Routing | `tracemaker route` routes every connection | TraceMaker's live viewer, then the routed board |
@@ -96,6 +101,29 @@ turn. The token count in the header splits usage by model.
   the lengths, skew and vias are checked, and the quote reminds you to order impedance control.
   On 2-layer boards the widths are impractical, so the check says so (USB full speed is fine
   without it).
+
+## Sim Lab: the simulation on the 3D board
+
+Once the board is routed, the Simulate step opens the Sim Lab: the finished board in 3D (drag to
+turn, wheel to zoom, right-drag to pan) with the ngspice results drawn on it.
+
+- **Current flow.** Dashes run along each track from the supply to the parts and back on ground,
+  brighter and faster where more current flows.
+- **LED glow.** Each LED lights in its own colour as brightly as its simulated current; RGB LEDs mix
+  their channels.
+- **Heat map.** Each part's dissipation spreads through the FR4 and copper (pours, tracks, pads)
+  and is lost to the air from both faces. The board and every part are coloured by temperature.
+  The model is a 2D plate solved in the browser, good for spotting hot spots and comparing
+  changes, not a substitute for a thermal camera.
+- **Risks.** Simulation problems, board-check findings, power-budget notes, LEDs over their
+  current and the hottest parts are listed beside the board. Click one to fly to the parts it
+  names and get the sliders that change it.
+- **Sliders.** Resistor values, supply voltages, IC load currents and the air temperature re-run
+  ngspice in under a second; cooling (still air to a fan) and copper weight change the heat map at
+  once. The design itself is not changed; ask the designer in the chat to make a change stick.
+- **Tour and video.** Play tour flies through the board: current, LEDs, heat, each risk and a
+  what-if. Record video saves the same tour as a 1280 × 720 MP4 with the project's files, and
+  you can ask the designer in the chat for a video demo.
 
 ## Bring-up, assembly and flashing
 
@@ -322,7 +350,8 @@ you trust.
 ```
 
 Code map: `wholeboard/ai` (providers, the design agent and the expert model), `wholeboard/blocks.py`
-(building blocks), `wholeboard/power.py`, `wholeboard/impedance.py`, `wholeboard/bringup.py`,
+(building blocks), `wholeboard/power.py`, `wholeboard/simlab.py` and `wholeboard/web/simlab.js`
+(Sim Lab), `wholeboard/impedance.py`, `wholeboard/bringup.py`,
 `wholeboard/ibom.py` (assembly page), `wholeboard/fwbuild.py` (PlatformIO), `wholeboard/dxf.py`,
 `wholeboard/case.py` (stock boxes), `wholeboard/report.py` (PDF), `wholeboard/kicad` (libraries,
 board and schematic writers, kicad-cli, geometry for the viewer), `wholeboard/router.py`

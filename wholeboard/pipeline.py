@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
 
-from . import bringup, case as stock_case, checks, config, design, enclosure, firmware, fwbuild, ibom, impedance, models3d, ngspice, power, revisions, router, sim
+from . import bringup, case as stock_case, checks, config, design, enclosure, firmware, fwbuild, ibom, impedance, models3d, ngspice, power, revisions, router, sim, simlab
 from .jlc import fabs as jfabs, parts as jparts, quote as jquote, savings as jsavings
 from .kicad import board, cli, geometry, libs, schematic
 from .project import Project
@@ -640,3 +641,63 @@ def _off_board(geo: dict) -> list[str]:
         if not (x0 - 0.5 <= f["x"] <= x1 + 0.5 and y0 - 0.5 <= f["y"] <= y1 + 0.5):
             out.append(f["ref"])
     return out
+
+
+def _simlab_inputs(p: Project) -> tuple[dict, dict, dict, Path, dict | None]:
+    """The finished board's design, geometry and simulation, for the Sim Lab."""
+    pcb = Path((p.state.get("artifacts") or {}).get("pcb") or "")
+    if not pcb.is_file():
+        raise ValueError("there is no finished board yet")
+    rdir = pcb.parent
+    geo_file = pcb.parent / f"{pcb.stem}.geo.json"
+    geo = json.loads(geo_file.read_text()) if geo_file.exists() else geometry.read(pcb)
+    spec = json.loads((rdir / "design.json").read_text()) if (rdir / "design.json").exists() else p.state["spec"]
+    res_file = rdir / "sim" / "results.json"
+    if not res_file.exists():
+        raise ValueError("this board was not simulated")
+    res = json.loads(res_file.read_text())
+    checks_ = ((p.state.get("visuals") or {}).get("drc:checks") or {}).get("report")
+    return spec, geo, res, rdir, checks_
+
+
+def simlab_scene(p: Project) -> dict:
+    spec, geo, res, _, checks_ = _simlab_inputs(p)
+    return simlab.scene(spec, geo, res, checks_)
+
+
+def simlab_whatif(p: Project, values: dict) -> dict:
+    spec, _, res, rdir, checks_ = _simlab_inputs(p)
+    cfg = config.load()
+    engine = ngspice.find(cfg)
+    if engine is None:
+        raise ValueError("ngspice is not installed")
+    with p.simlab_lock:     # one what-if at a time per project; they share a folder
+        return simlab.whatif(spec, res, values, rdir / "sim-whatif", checks_, cfg=cfg, engine=engine, log=lambda m: None)
+
+
+def save_simlab_video(p: Project, data: bytes, kind: str) -> dict:
+    """Keep a Sim Lab video recorded in the browser, as a constant-rate MP4 when ffmpeg is installed."""
+    pcb = Path((p.state.get("artifacts") or {}).get("pcb") or "")
+    out_dir = (pcb.parent if pcb.is_file() else p.root) / "video"
+    out_dir.mkdir(exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    raw = out_dir / f"simlab-{stamp}-browser.{'mp4' if 'mp4' in kind else 'webm'}"
+    raw.write_bytes(data)
+    mp4 = out_dir / f"simlab-{stamp}.mp4"
+    ff = shutil.which("ffmpeg")
+    keep = raw
+    if ff:
+        # browsers record at a variable frame rate; a constant 30 fps H.264 file plays everywhere
+        try:
+            subprocess.run([ff, "-y", "-loglevel", "error", "-i", str(raw), "-r", "30", "-c:v", "libx264",
+                            "-pix_fmt", "yuv420p", "-crf", "23", "-preset", "veryfast", "-movflags", "+faststart",
+                            "-an", str(mp4)], check=True, timeout=300, capture_output=True)
+            raw.unlink()
+            keep = mp4
+        except (subprocess.SubprocessError, OSError) as e:
+            p.log("sim", f"The video was kept as the browser recorded it; converting it failed: {e}")
+    elif raw.suffix == ".mp4":
+        keep = raw.rename(mp4)
+    files = [{"name": keep.name, "url": p.file_url(keep)}]
+    p.log("sim", f"Saved the Sim Lab video {files[0]['name']}")
+    return {"files": files}

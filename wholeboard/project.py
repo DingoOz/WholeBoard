@@ -46,6 +46,7 @@ class Project:
         self.session = None
         self.worker: threading.Thread | None = None
         self.fw_thread: threading.Thread | None = None
+        self.simlab_lock = threading.Lock()
         self.cancel = threading.Event()
         self.answers: dict[str, str] = {}
         self.answer_ready = threading.Condition(self.lock)

@@ -428,6 +428,38 @@ async def project_report(pid: str):
     return {"url": p.file_url(pdf), "name": pdf.name}
 
 
+@app.get("/api/projects/{pid}/simlab")
+async def simlab_scene(pid: str):
+    """The finished board with its simulation, for the 3D Sim Lab."""
+    p = _project(pid)
+    try:
+        return await asyncio.to_thread(pipeline.simlab_scene, p)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/projects/{pid}/simlab/whatif")
+async def simlab_whatif(pid: str, request: Request):
+    """Re-simulate the board with the Sim Lab's slider values."""
+    p = _project(pid)
+    body = await request.json()
+    values = {str(k): float(v) for k, v in (body.get("values") or {}).items()}
+    try:
+        return await asyncio.to_thread(pipeline.simlab_whatif, p, values)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/projects/{pid}/simlab/video")
+async def simlab_video(pid: str, request: Request):
+    """Keep a Sim Lab video the browser recorded."""
+    p = _project(pid)
+    data = await request.body()
+    if not data or len(data) > 400 * 1024 * 1024:
+        raise HTTPException(400, "no video, or it is too big")
+    return await asyncio.to_thread(pipeline.save_simlab_video, p, data, request.headers.get("content-type") or "")
+
+
 @app.post("/api/projects/{pid}/outline")
 async def import_outline(pid: str, request: Request):
     """Read a board outline (and holes) from a DXF and hand it to the designer."""
