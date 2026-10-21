@@ -9,10 +9,11 @@ import traceback
 import uuid
 from pathlib import Path
 
-from .. import config, design, pipeline, sim
+from .. import blocks, config, design, impedance, pipeline, power, sim
 from ..jlc import parts as jparts
 from ..kicad import libs, schematic
 from ..project import Project
+from . import expert
 from .providers import AIError, make_session
 
 SYSTEM = """You are WholeBoard's PCB design engineer. You turn a user's description into a \
@@ -28,7 +29,11 @@ before designing. Ask only what matters, one question per call, offering options
 can. Do not ask about things you can decide sensibly yourself; state those assumptions instead. \
 Unless the user already said, ask whether they want a 3D-printable enclosure, and if so whether \
 the board should screw into it (then add mounting holes).
-2. Choose the architecture and parts. For each part find a JLCPCB part with search_parts \
+2. Choose the architecture and parts. Start from proven building blocks: call list_blocks, then \
+block_info for the ones you need (USB-C input, regulators, ESP32/RP2040 modules, chargers, CAN/RS-485, \
+Qwiic, LEDs, buttons). A block brings its parts, support parts and wiring, already checked against KiCad's \
+libraries and JLCPCB's stock; you only connect its ports to your nets. Add your own components for \
+everything else. For each part find a JLCPCB part with search_parts \
 (prefer "basic" or "preferred" parts with good stock; "extended" parts add a feeder fee) and a \
 matching KiCad footprint with search_footprints. Check pin numbering with footprint_info and, \
 for ICs, symbol_info: nets connect FOOTPRINT PAD NAMES, so map every IC pin name to its pad \
@@ -80,6 +85,12 @@ high-speed signals, with planes {"In1.Cu": "GND", "In2.Cu": "<main supply>"}.
 - Every pad must be in a net or listed in the component's no_connect list.
 - Rate parts for what the simulation shows: resistor power (0603 = 100 mW), LED current, \
 regulator heat ((Vin - Vout) × current), capacitor voltage (with margin), switch current.
+- Set board "test_points": true to add probe pads on every supply rail for bring-up (or a list of nets).
+- High-speed or RF nets need controlled impedance: list them in "impedance" (USB D+/D- as a 90 ohm pair, \
+named like USB_DP/USB_DN; RF feeds 50 ohm single). The usb_c_data block adds its pair itself. On 2 layers \
+impedance is impractical: fine for USB full speed, use 4 layers for USB high speed, Ethernet or RF.
+- If the board must fit an existing box, set board.case (below) and put mounting holes on its bosses with \
+board.mounting_holes.positions. If the user gave a DXF outline, use board.outline as given.
 - JLCPCB rotation offsets for common packages are applied to the CPL automatically. If a part \
 needs a different correction, give the component "cpl": {"rotation": 90, "dx_mm": 0, "dy_mm": 0}.
 
@@ -107,9 +118,20 @@ Design spec (the `spec` argument of submit_design)
 "symbol" is optional; without it the schematic shows a generated box.
 - Pins are "REF.PAD". Mounting holes from board.mounting_holes need no component entries.
 - "rules" is optional; the defaults suit JLCPCB's standard process.
+- "blocks": building blocks (format below); their parts and nets are added to "components" and "nets".
+- board.outline: [[x, y], ...] a polygon in mm for a non-rectangular board (width/height follow from it).
+- board.mounting_holes.positions: [[x, y], ...] hole centres, instead of one in each corner.
+- board.case: the user's own box, for drilling templates instead of a printed enclosure:
+  {CASE_DOC}
 - "simulation" and per-component "sim" are described below.
 
 {SIM_DOC}
+
+Building blocks
+{BLOCK_DOC}
+
+Controlled impedance
+{IMP_DOC}
 
 Common JLCPCB basic parts (checked October 2026; confirm stock with search_parts):
 0603 resistors 1% (Resistor_SMD:R_0603_1608Metric): 0R C21189, 100R C22775, 1k C21190,
@@ -124,7 +146,8 @@ Others: AO3400A N-MOSFET C20917 (SOT-23), tactile switch TS-1187A C318884 (5.1x5
 Use find_passive for other resistor, capacitor and LED values.
 
 Keep messages to the user short and plain. Explain decisions briefly as you go.""".replace(
-    "{SIM_DOC}", sim.SIM_DOC)
+    "{SIM_DOC}", sim.SIM_DOC).replace("{BLOCK_DOC}", blocks.doc()).replace("{IMP_DOC}", impedance.DOC).replace(
+    "{CASE_DOC}", __import__("wholeboard.case").case.__doc__.split("\n\n")[1].strip().replace("\n", "\n  "))
 
 
 def _tool(name: str, description: str, props: dict, required: list[str]) -> dict:
@@ -162,6 +185,14 @@ TOOLS = [
     _tool("symbol_info", "Pin numbers, names and types of a KiCad symbol, and its default "
           "footprint. Use it to map IC pin names to footprint pad numbers.",
           {"symbol": {"type": "string"}}, ["symbol"]),
+    _tool("list_blocks", "List the proven building blocks: tested sub-circuits (USB-C input, regulators, MCU "
+          "modules with their support parts, chargers, transceivers, connectors, LEDs, buttons) you can add to "
+          "the spec's \"blocks\" list.", {}, []),
+    _tool("block_info", "A building block's ports (what to connect), options, parts and an example \"blocks\" entry.",
+          {"block": {"type": "string"}}, ["block"]),
+    _tool("consult_expert", "Ask the senior engineer (a stronger AI model) for advice when you are unsure about "
+          "the architecture, a part choice or a problem you cannot fix. Include the context it needs.",
+          {"question": {"type": "string"}}, ["question"]),
     _tool("check_design", "Validate a design spec without building it: footprints, pad names, "
           "nets, board area and JLCPCB part stock. Quick; use it before submit_design on big designs.",
           {"spec": {"type": "object"}}, ["spec"]),
@@ -223,7 +254,8 @@ class Agent:
 
     def _new_session(self):
         ai = config.load()["ai"]
-        sess = make_session(ai, SYSTEM, TOOLS)
+        tools = TOOLS if expert.settings(ai) else [t for t in TOOLS if t["name"] != "consult_expert"]
+        sess = make_session(ai, SYSTEM, tools)
         self.p.state["ai_label"] = sess.label
         return sess
 
@@ -298,8 +330,11 @@ class Agent:
             with p.lock:
                 pending = p.inbox[:]
                 p.inbox.clear()
-            extra = ("Message from the user while you were working: " + "\n\n".join(pending)) if pending else None
-            p.session.add_tool_results(results, extra)
+            extras = [n for n in getattr(self, "notes", []) if n]
+            self.notes = []
+            if pending:
+                extras.append("Message from the user while you were working: " + "\n\n".join(pending))
+            p.session.add_tool_results(results, "\n\n".join(extras) or None)
             p.set_status("running", f"Working with {p.session.label}")
         p.chat("system", "Reached the turn limit for one run. Send a message to continue.")
         p.set_status("idle", "Turn limit reached")
@@ -349,6 +384,16 @@ class Agent:
             info = schematic.symbol_info(str(args["symbol"]))
             p.emit({"type": "tool", "name": name, "text": f"Read symbol {args['symbol']}"})
             return json.dumps(info) if info else "Symbol not found; use search_symbols."
+        if name == "list_blocks":
+            p.emit({"type": "tool", "name": name, "text": "Listed the building blocks"})
+            return json.dumps(blocks.listing())
+        if name == "block_info":
+            info = blocks.info(str(args["block"]))
+            p.emit({"type": "tool", "name": name, "text": f"Read building block {args['block']}"})
+            return json.dumps(info) if info else "No such block; call list_blocks."
+        if name == "consult_expert":
+            p.emit({"type": "tool", "name": name, "text": "Asked the expert"})
+            return self._expert("question", str(args["question"])) or "No expert model is set up."
         if name == "check_design":
             spec = args["spec"]
             rep = design.validate(spec)
@@ -374,6 +419,8 @@ class Agent:
                 except Exception:  # noqa: BLE001
                     return None
             res = sim.simulate(spec, out, cfg, ngspice.find(cfg), part_info=lookup, cancel=p.cancel)
+            if res.get("ran"):
+                res["power"] = power.budget(spec, res)
             return json.dumps(pipeline.sim_summary(res), default=str)
         if name == "report_review":
             issues = [i for i in args.get("issues") or [] if isinstance(i, dict)]
@@ -392,7 +439,19 @@ class Agent:
             p.set_status("running", "Building the board")
             res = pipeline.build(p, args["spec"], self.view_origin, by="AI")
             if not res.get("ok"):
+                self.failures = (getattr(self, "failures", []) + [{k: res.get(k) for k in (
+                    "stage", "errors", "drc_errors", "unconnected", "failures", "hint")}])[-4:]
+                if len(self.failures) >= 3:
+                    advice = self._expert("stuck", expert.stuck_prompt(p.state.get("spec") or args["spec"], self.failures))
+                    if advice:
+                        res["expert_advice"] = advice
+                        self.failures = []
                 return json.dumps(res, default=str)
+            self.failures = []
+            review = self._expert("review", expert.review_prompt(p.state.get("spec") or {}, res))
+            if review:
+                res["expert_review"] = (review + "\n\nFix every PROBLEM the expert lists (submit again), and "
+                                        "mention the NOTES to the user.")
             images = self._review_images() if self._vision() else []
             if images:
                 p.step("review", "running", "The AI is looking at the renders")
@@ -409,6 +468,12 @@ class Agent:
             pcb = Path((p.state.get("artifacts") or {}).get("pcb") or "")
             if not p.state.get("spec") or not pcb.exists():
                 return json.dumps({"error": "There is no finished board yet. Get a clean build first."})
+            if (p.state["spec"].get("board") or {}).get("case"):
+                res = pipeline.run_case(p, p.state["spec"])
+                return json.dumps({"stock_case": True, "result": res,
+                                   "note": "The board goes in the user's own box (board.case), so there is no printed "
+                                           "enclosure: WholeBoard checked the fit and drew drilling templates. Fix any "
+                                           "problems by changing the design, then finish."})
             from .. import enclosure
             from ..kicad import geometry
             ctx = enclosure.context(geometry.read(pcb), design.normalise(p.state["spec"]),
@@ -423,6 +488,8 @@ class Agent:
         if name == "build_enclosure":
             p.emit({"type": "tool", "name": name, "text": "Building the enclosure in FreeCAD"})
             p.set_status("running", "Building the enclosure in FreeCAD")
+            if ((p.state.get("spec") or {}).get("board") or {}).get("case"):
+                return json.dumps(pipeline.run_case(p, p.state["spec"]))
             res = pipeline.run_enclosure(p, p.state.get("spec") or {}, args.get("enclosure") or {})
             return json.dumps(res)
         if name == "finish":
@@ -437,13 +504,13 @@ class Agent:
             return "Finished. The user can see the summary, files and quote."
         return f"Unknown tool {name}"
 
-    def _count(self, usage: dict) -> None:
-        """Add one turn's tokens and price to the project's running total."""
+    def _count(self, usage: dict, cfg: dict | None = None) -> None:
+        """Add one turn's tokens and price to the project's running total (and the per-model split)."""
         if not usage:
             return
         from .providers import turn_cost
         p = self.p
-        cost = turn_cost(usage.get("model", ""), usage, config.load()["ai"])
+        cost = turn_cost(usage.get("model", ""), usage, cfg or config.load()["ai"])
         with p.lock:
             u = p.state.setdefault("usage", {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
                                              "turns": 0, "cost": 0.0, "priced": True})
@@ -454,7 +521,11 @@ class Agent:
                 u["priced"] = False
             else:
                 u["cost"] = round(u.get("cost", 0.0) + cost, 6)
-            u["model"] = usage.get("model")
+            u["model"] = usage.get("model") if cfg is None else u.get("model")
+            m = u.setdefault("by_model", {}).setdefault(usage.get("model") or "?", {"turns": 0, "cost": 0.0, "tokens": 0})
+            m["turns"] += 1
+            m["cost"] = round(m["cost"] + (cost or 0), 6)
+            m["tokens"] += sum(int(usage.get(k) or 0) for k in ("input", "output", "cache_read", "cache_write"))
             p.save()
             snapshot = dict(u)
         p.emit({"type": "usage", **snapshot})
@@ -484,6 +555,44 @@ class Agent:
     def _brief_done(self) -> None:
         if self.p.state["steps"]["brief"]["status"] in ("pending", "running"):
             self.p.step("brief", "done", "Requirements understood")
+            if not self.p.state.get("expert_plan"):
+                plan = self._expert("plan", expert.plan_prompt(self._requirements(), blocks.listing()))
+                if plan:
+                    self.p.state["expert_plan"] = plan
+                    self.notes = getattr(self, "notes", []) + [
+                        "The senior engineer's plan for this board (follow it unless you find a real problem):\n" + plan]
+
+    def _requirements(self) -> list[str]:
+        out = []
+        for e in self.p.events:
+            if e.get("type") == "chat" and e.get("role") == "user":
+                out.append(e["text"])
+            elif e.get("type") == "question":
+                out.append(f"Q: {e.get('question')}")
+            elif e.get("type") == "answer":
+                out.append(f"A: {e.get('text')}")
+        return out[-30:]
+
+    def _expert(self, kind: str, text: str) -> str | None:
+        """Ask the expert model, if one is set up; show its answer and count its cost."""
+        cfg = expert.settings(config.load()["ai"])
+        if not cfg:
+            return None
+        p = self.p
+        labels = {"plan": "planning the design", "review": "reviewing the board", "stuck": "looking at the failed builds",
+                  "question": "answering a question"}
+        p.set_status("running", f"Expert ({cfg.get('anthropic_model') if cfg['provider'] == 'anthropic' else cfg.get('openai_model')}) "
+                     f"is {labels.get(kind, 'thinking')}")
+        images = self._review_images() if kind == "review" and cfg["provider"] == "anthropic" else None
+        try:
+            answer, usage = expert.ask(cfg, text, images)
+        except Exception as e:  # noqa: BLE001 - the worker carries on without advice
+            p.log("brief", f"The expert model could not be reached: {e}")
+            return None
+        self._count(usage, cfg)
+        p.emit({"type": "expert", "kind": kind, "text": answer})
+        p.chat("assistant", f"**Expert {labels.get(kind, '')}:**\n\n{answer}")
+        return answer
 
     def _ask(self, question: str, options: list[str]) -> str:
         p = self.p

@@ -89,6 +89,10 @@ def _from_jlc(item: dict) -> dict:
         "datasheet": item.get("dataManualUrl"),
         "url": item.get("lcscGoodsUrl"),
         "source": "jlcpcb.com",
+        "buyable": str(item.get("isBuyComponent") or "1") == "1",
+        "no_buy_reason": item.get("noBuyReason"),
+        "alternative": item.get("componentAlternativesCode"),
+        "restock_date": item.get("estimateDate"),
     }
 
 
@@ -148,12 +152,12 @@ def search(keyword: str, limit: int = 10, in_stock: bool = True) -> list[dict]:
     return items
 
 
-def lookup(lcsc: str) -> dict | None:
-    """Details for one LCSC part number such as 'C6186'."""
+def lookup(lcsc: str, fresh: bool = False) -> dict | None:
+    """Details for one LCSC part number such as 'C6186'. fresh skips the day-old cache (live stock)."""
     code = lcsc.strip().upper()
     if not re.fullmatch(r"C\d+", code):
         return None
-    hit = _cached(f"p:{code}")
+    hit = None if fresh else _cached(f"p:{code}")
     if hit is not None:
         return hit
     part = None

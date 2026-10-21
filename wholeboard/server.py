@@ -388,6 +388,81 @@ async def apply_swaps(pid: str, request: Request):
     return {"changed": changed, "files": files, **res}
 
 
+@app.post("/api/projects/{pid}/stock")
+async def check_stock(pid: str, request: Request):
+    """Check every BOM line against JLCPCB's live stock, right before ordering."""
+    p = _project(pid)
+    if not p.state.get("spec"):
+        raise HTTPException(400, "no design yet")
+    body = await request.json() if (await request.body()) else {}
+    from .jlc import stock
+    opts = {**config.load()["jlcpcb"], **((p.state.get("visuals", {}).get("quote:quote") or {}).get("options") or {}),
+            **(body or {})}
+    res = await asyncio.to_thread(stock.check, p.state["spec"], opts, lambda m: p.log("quote", m))
+    with p.lock:
+        p.state["stock"] = res
+        p.save()
+    p.emit({"type": "stock", **res})
+    return res
+
+
+@app.post("/api/projects/{pid}/firmware/build")
+def build_firmware(pid: str):
+    """Compile the starter firmware in the background; the firmware card updates when it is done."""
+    p = _project(pid)
+    if p.fw_thread and p.fw_thread.is_alive():
+        raise HTTPException(409, "the firmware is already compiling")
+    p.fw_thread = threading.Thread(target=pipeline.build_firmware, args=(p,), daemon=True, name=f"fw-{p.id}")
+    p.fw_thread.start()
+    return {"started": True}
+
+
+@app.post("/api/projects/{pid}/report")
+async def project_report(pid: str):
+    p = _project(pid)
+    if not p.state.get("spec"):
+        raise HTTPException(400, "no design yet")
+    pdf = await asyncio.to_thread(pipeline.make_report, p)
+    if not pdf:
+        raise HTTPException(500, "the report could not be written; see the log")
+    return {"url": p.file_url(pdf), "name": pdf.name}
+
+
+@app.post("/api/projects/{pid}/outline")
+async def import_outline(pid: str, request: Request):
+    """Read a board outline (and holes) from a DXF and hand it to the designer."""
+    import base64
+    from . import dxf
+    p = _project(pid)
+    body = await request.json()
+    try:
+        text = base64.b64decode(body.get("data") or "").decode("utf-8", errors="replace")
+        res = dxf.read(text)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Could not read the DXF: {e}") from e
+    name = str(body.get("name") or "outline.dxf")
+    holes = res["holes"]
+    msg = (f"Use the board outline from {name}: {res['width_mm']:g} × {res['height_mm']:g} mm"
+           + (", rectangular." if res["rectangular"] else
+              f", custom shape. Set board.outline to {json.dumps(res['outline'])}.")
+           + (f" It has {len(holes)} holes; make them the mounting holes with board.mounting_holes "
+              f"{json.dumps({'diameter_mm': holes[0]['diameter_mm'], 'positions': [[h['x_mm'], h['y_mm']] for h in holes]})}."
+              if holes else "")
+           + (" " + " ".join(res["notes"]) if res["notes"] else ""))
+    _agent(p, request).start(msg)
+    return {**res, "message": msg}
+
+
+@app.post("/api/tools/platformio/install")
+async def install_platformio():
+    from . import fwbuild
+    try:
+        exe = await asyncio.to_thread(fwbuild.install, lambda m: None)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Could not install PlatformIO: {e}") from e
+    return {"ok": True, "path": exe}
+
+
 @app.put("/api/projects/{pid}/enclosure")
 async def put_enclosure(pid: str, request: Request):
     """Rebuild the enclosure from an edited enclosure spec, without the AI."""

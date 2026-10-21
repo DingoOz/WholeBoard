@@ -135,6 +135,8 @@ class AnthropicSession:
             messages=self.messages, thinking={"type": "adaptive"},
             output_config={"effort": self.effort}, cache_control={"type": "ephemeral"},
         )
+        if not self.tools:
+            kwargs.pop("tools")
         if self.model in _FALLBACK_MODELS:
             kwargs["betas"] = ["server-side-fallback-2026-07-01"]
             kwargs["fallbacks"] = "default"
@@ -263,6 +265,9 @@ class OpenAISession:
             self.vision_failed = True
         return found
 
+    def _tool_args(self) -> dict:
+        return {"tools": self.tools, "tool_choice": "auto"} if self.tools else {}
+
     def _wire(self) -> list:
         return [{k: v for k, v in m.items() if not k.startswith("_")} for m in self.messages]
 
@@ -270,16 +275,14 @@ class OpenAISession:
         o = self._openai
         try:
             try:
-                resp = self.client.chat.completions.create(
-                    model=self.model, messages=self._wire(), tools=self.tools, tool_choice="auto")
+                resp = self.client.chat.completions.create(model=self.model, messages=self._wire(), **self._tool_args())
             except (o.BadRequestError, o.InternalServerError, o.UnprocessableEntityError) as e:
                 if not any(m.get("_images") for m in self.messages):
                     raise
                 if not self._drop_images():
                     raise
                 del e
-                resp = self.client.chat.completions.create(
-                    model=self.model, messages=self._wire(), tools=self.tools, tool_choice="auto")
+                resp = self.client.chat.completions.create(model=self.model, messages=self._wire(), **self._tool_args())
         except o.AuthenticationError as e:
             raise AIError("The AI server rejected the API key. Check it in Settings.") from e
         except o.NotFoundError as e:

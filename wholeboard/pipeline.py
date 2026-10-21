@@ -9,8 +9,8 @@ import threading
 import time
 from pathlib import Path
 
-from . import checks, config, design, enclosure, firmware, models3d, ngspice, revisions, router, sim
-from .jlc import parts as jparts, quote as jquote, savings as jsavings
+from . import bringup, case as stock_case, checks, config, design, enclosure, firmware, fwbuild, ibom, impedance, models3d, ngspice, power, revisions, router, sim
+from .jlc import fabs as jfabs, parts as jparts, quote as jquote, savings as jsavings
 from .kicad import board, cli, geometry, libs, schematic
 from .project import Project
 
@@ -205,14 +205,15 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
         p.step("route", "running", "TraceMaker is routing")
         try:
             rr = router.route(placed, routed, log=lambda s: p.log("route", s), cancel=p.cancel,
-                              view_port=port, embed_origin=view_origin)
+                              view_port=port, embed_origin=view_origin, diff_pairs=impedance.has_pairs(spec))
             if not rr["complete"] and not p.cancel.is_set():
                 p.log("route", "Not every connection routed; nudging the placement and trying again.")
                 eco = rdir / f"{name}-2b-eco.kicad_pcb"
                 router.place(routed, eco, log=lambda s: p.log("route", s), cancel=p.cancel,
                              mode="eco", scratch=False)
                 rr2 = router.route(eco, routed, log=lambda s: p.log("route", s), cancel=p.cancel,
-                                   view_port=port, embed_origin=view_origin, reroute=True)
+                                   view_port=port, embed_origin=view_origin, reroute=True,
+                                   diff_pairs=impedance.has_pairs(spec))
                 if (rr2.get("routed") or 0) >= (rr.get("routed") or 0):
                     rr = rr2
         except Exception as e:  # noqa: BLE001
@@ -255,6 +256,15 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
     except Exception as e:  # noqa: BLE001
         bc = None
         p.log("drc", f"Board checks did not run: {e}")
+    if spec.get("impedance"):
+        try:
+            imp = impedance.check(spec, geometry.read(final))
+            p.visual("drc", "impedance", "Controlled-impedance traces", report=imp)
+            result["impedance"] = imp
+            for w in imp["warnings"]:
+                p.log("drc", w)
+        except Exception as e:  # noqa: BLE001
+            p.log("drc", f"Impedance check did not run: {e}")
     extra = f", {len(bc['problems']) + len(bc['warnings'])} board notes" if bc and (bc["problems"] or bc["warnings"]) else ""
     p.step("drc", "warn" if bc and bc["problems"] else "done", f"clean ({drc['warnings']} warnings{extra})")
     _check(p)
@@ -301,6 +311,11 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
             cpl, fixes = cli.jlc_cpl(Path(fab["pos"]), fab_dir / f"{name}-cpl.csv", excl, overrides)
             files.append({"name": cpl.name, "url": p.file_url(cpl)})
             result["cpl_rotations"] = fixes
+        try:
+            page = ibom.generate(spec, geometry.read(final), fab_dir / f"{name}-assembly.html", spec.get("name"))
+            files.append({"name": page.name, "url": p.file_url(page)})
+        except Exception as e:  # noqa: BLE001
+            p.log("outputs", f"Assembly page not written: {e}")
         exports = p.root / "exports"
         exports.mkdir(exist_ok=True)
         try:
@@ -315,6 +330,15 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
                      url=p.file_url(fw_zip), name=fw_zip.name)
             result["firmware"] = {"mcu": fw["mcu"], "family": fw["family"], "pins": len(fw["pins"]),
                                   "notes": fw["notes"]}
+        try:
+            bu = bringup.guide(spec, sim_res, sim_res.get("power"), fw)
+            md = rdir / f"{name}-bringup.md"
+            md.write_text(bu["markdown"])
+            shutil.copyfile(md, exports / f"{name}-rev{rev}-bringup.md")
+            p.visual("outputs", "bringup", "Bring-up guide", steps=bu["steps"], test_points=bu["test_points"],
+                     url=p.file_url(exports / f"{name}-rev{rev}-bringup.md"), name=f"{name}-rev{rev}-bringup.md")
+        except Exception as e:  # noqa: BLE001
+            p.log("outputs", f"Bring-up guide not written: {e}")
         zip_proj = shutil.make_archive(str(exports / f"{name}-rev{rev}-kicad-project"), "zip", rdir)
         files.append({"name": Path(zip_proj).name, "url": p.file_url(Path(zip_proj))})
         fixes = result.get("cpl_rotations") or []
@@ -335,10 +359,15 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
     result["ok"] = True
     result["folder"] = str(rdir)
     _check(p)
+    make_report(p)
 
-    # ---- 9. enclosure: rebuilt around the new board if one was designed before
-    if p.state.get("enclosure_spec"):
+    # ---- 9. enclosure: drilling templates for a stock case, or the printed enclosure rebuilt around the board
+    if spec["board"].get("case"):
+        result["case"] = run_case(p, spec, final)
+        make_report(p)
+    elif p.state.get("enclosure_spec"):
         result["enclosure"] = run_enclosure(p, spec, p.state["enclosure_spec"], final)
+        make_report(p)
     else:
         p.step("enclosure", "pending", "Designed once the board is finished")
     return result
@@ -392,6 +421,13 @@ def run_sim(p: Project, spec: dict, rdir: Path) -> dict:
         p.step("sim", "warn" if res["warnings"] else "done", ", ".join(sup[:2] + bits) or "Simulated")
     for w in res["problems"] + res["warnings"]:
         p.log("sim", w)
+    if res.get("ran"):
+        try:
+            res["power"] = power.budget(spec, res)
+            p.visual("sim", "power", "Power budget and heat", budget=res["power"])
+            (rdir / "sim" / "power.json").write_text(json.dumps(res["power"], indent=1))
+        except Exception as e:  # noqa: BLE001
+            p.log("sim", f"Power budget not worked out: {e}")
     return res
 
 
@@ -401,6 +437,8 @@ def sim_summary(res: dict) -> dict:
             "signals", "expectations")
     out = {k: res[k] for k in keep if k in res}
     out["parts"] = [r for r in res.get("parts", []) if r["kind"] not in ("capacitor",) or r.get("rating_v")][:40]
+    if res.get("power"):
+        out["power_budget"] = power.brief(res["power"])
     return out
 
 
@@ -452,6 +490,44 @@ def run_enclosure(p: Project, spec: dict, enc: dict, pcb: Path | None = None) ->
             if k in s}
 
 
+def make_report(p: Project) -> Path | None:
+    """The PDF project report, shown with the outputs."""
+    from . import report
+    try:
+        pdf = report.generate(p)
+    except Exception as e:  # noqa: BLE001
+        p.log("outputs", f"Project report not written: {e}")
+        return None
+    p.visual("outputs", "report", "Project report (PDF)", url=p.file_url(pdf), name=pdf.name,
+             made=time.strftime("%Y-%m-%d %H:%M"))
+    return pdf
+
+
+def run_case(p: Project, spec: dict, pcb: Path | None = None) -> dict:
+    """Check the board fits the user's own box and draw the drilling templates."""
+    spec = design.normalise(spec)
+    pcb = pcb or Path((p.state.get("artifacts") or {}).get("pcb") or "")
+    if not pcb.exists():
+        return {"ok": False, "problems": ["There is no finished board yet."]}
+    p.step("enclosure", "running", f"Fitting the board into the {spec['board']['case'].get('name') or 'case'}")
+    try:
+        r = stock_case.build(spec, geometry.read(pcb), pcb.parent / "case", spec["name"],
+                             (p.state.get("enclosure_spec") or {}).get("part_heights"))
+    except Exception as e:  # noqa: BLE001
+        p.step("enclosure", "error", str(e)[:200])
+        return {"ok": False, "problems": [str(e)]}
+    files = [{"name": f["path"].name, "label": f["title"], "url": p.file_url(f["path"])} for f in r["files"]]
+    p.visual("enclosure", "case", f"Fitting into a {r['case']['name']}", result={k: v for k, v in r.items()
+             if k not in ("files", "page")}, files=files, page=p.file_url(r["page"]))
+    for w in r["problems"] + r["warnings"]:
+        p.log("enclosure", w)
+    n = len(r["cutouts"])
+    p.step("enclosure", "error" if r["problems"] else ("warn" if r["warnings"] else "done"),
+           f"{len(r['problems'])} problems fitting the case" if r["problems"] else
+           f"Fits, {r['headroom_mm']:g} mm headroom, {n} opening{'s' if n != 1 else ''} to drill")
+    return {k: r[k] for k in ("ok", "case", "problems", "warnings", "cutouts", "headroom_mm")}
+
+
 def run_quote(p: Project, spec: dict, opts: dict | None = None) -> dict:
     opts = {**config.load()["jlcpcb"], **(opts or {})}
     p.step("quote", "running", "Pricing at JLCPCB")
@@ -465,6 +541,10 @@ def run_quote(p: Project, spec: dict, opts: dict | None = None) -> dict:
             q["savings"] = jsavings.find(q, spec, log=lambda s: p.log("quote", s))
         except Exception as e:  # noqa: BLE001
             p.log("quote", f"Cheaper-part search failed: {e}")
+    try:
+        q["fabs"] = jfabs.compare(design.normalise(spec), q)
+    except Exception as e:  # noqa: BLE001
+        p.log("quote", f"Other fabs not compared: {e}")
     p.state["quote"] = q
     p.save()
     rev = p.state.get("revision", 0)
@@ -494,6 +574,38 @@ def run_quote(p: Project, spec: dict, opts: dict | None = None) -> dict:
                                  if (q.get("panel_options") or {}).get("recommended") else None),
             "cheaper_parts": [{"refs": x["refs"], "use_lcsc": x["to"]["lcsc"], "mpn": x["to"]["mpn"],
                                "saving": x["saving"], "reason": x["reason"]} for x in sv.get("suggestions") or []]}
+
+
+def build_firmware(p: Project) -> dict:
+    """Compile the latest revision's starter firmware with PlatformIO and offer the result for flashing."""
+    vis = (p.state.get("visuals") or {}).get("outputs:firmware")
+    folder = (p.state.get("artifacts") or {}).get("folder")
+    if not vis or not folder or not (Path(folder) / "firmware").is_dir():
+        return {"ok": False, "error": "This board has no starter firmware."}
+    fw = vis["firmware"]
+    src = Path(folder) / "firmware"
+    work = p.root / "firmware-build" / Path(folder).name     # outside the revision, so .pio stays out of its zip
+    work.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, work, dirs_exist_ok=True)
+    data = {k: v for k, v in vis.items() if k != "title"}
+    p.visual("outputs", "firmware", vis["title"], **{**data, "build": {"status": "running"}})
+    try:
+        res = fwbuild.build(work, fw["env"], fw["family"], log=lambda m: p.log("outputs", m))
+    except Exception as e:  # noqa: BLE001
+        res = {"ok": False, "error": str(e)}
+    show = {k: res.get(k) for k in ("ok", "seconds", "usage", "error", "kind", "chip")}
+    show["status"] = "done" if res.get("ok") else "failed"
+    flash = work / "flash"
+    flash.mkdir(exist_ok=True)
+    show["files"] = []
+    for f in res.get("files") or []:
+        dest = flash / f["name"]
+        shutil.copyfile(f["path"], dest)     # boot_app0.bin lives in PlatformIO's own folder
+        show["files"].append({"name": f["name"], "url": p.file_url(dest), "offset": f.get("offset")})
+    p.visual("outputs", "firmware", vis["title"], **{**data, "build": show})
+    p.log("outputs", f"Firmware compiled in {res.get('seconds')} s" if res.get("ok")
+          else f"Firmware did not compile: {res.get('error')}")
+    return show
 
 
 def refresh_bom(p: Project, spec: dict) -> list[str]:

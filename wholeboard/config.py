@@ -26,6 +26,8 @@ DEFAULTS: dict = {
         "openai_price_in": 0,       # US$ per million tokens, for cost tracking (0 = free / local)
         "openai_price_out": 0,
         "max_turns": 60,
+        # a stronger model that plans and reviews while the model above does the legwork
+        "expert": {"enabled": False, "provider": "anthropic", "model": "claude-opus-5-5", "effort": "high"},
         "vision": "auto",           # show board renders to the AI for a visual review: auto | on | off
     },
     "tools": {
@@ -35,6 +37,7 @@ DEFAULTS: dict = {
         "tracemaker_wsl": False,    # Windows: run TraceMaker inside WSL
         "freecad": "",              # FreeCAD (freecadcmd, the app, or an AppImage); empty = auto-detect
         "ngspice": "",              # ngspice program or KiCad's libngspice; empty = auto-detect
+        "platformio": "",           # pio program, for compiling the starter firmware; empty = auto-detect
         "models3d": "auto",         # 3D part models: auto (download missing ones), local, off
         "models3d_dir": "",         # extra folder of KiCad 3D models (kicad-packages3D)
         "footprint_dir": "",        # empty = auto-detect

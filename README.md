@@ -24,18 +24,20 @@ interface opens in your browser.
 | Step | What happens | Visual |
 |---|---|---|
 | Requirements | The AI reads your request and asks questions in the chat | Conversation |
-| Parts & architecture | Searches JLCPCB parts, KiCad footprints and symbols | Tool activity in the chat |
+| Parts & architecture | Starts from proven building blocks, searches JLCPCB parts, KiCad footprints and symbols | Tool activity in the chat |
 | Design check | Footprints exist, pad names are right, nets are sane, parts are in stock | Parts and nets tables |
 | Schematic & ERC | A KiCad schematic, one symbol per part, nets joined by labels, checked by KiCad's electrical rules check | Zoomable schematic, ERC findings |
 | Simulation | ngspice runs the circuit: rail voltages, currents, part ratings, heat, battery life, oscillator frequency, filter response | Plots, ratings table, the SPICE netlist |
+| Power budget | Current per supply and rail, regulator headroom and heat, battery life on a duty cycle | Budget meters, thermal table |
 | Board & footprints | Outline, mounting holes, footprints with nets | Board view |
 | Placement | `tracemaker-place` places the parts | Board view with air wires |
 | Routing | `tracemaker route` routes every connection | TraceMaker's live viewer, then the routed board |
-| DRC & copper pour | Ground pour, zone fill, KiCad DRC, then trace heating, voltage drop and decoupling-capacitor distances | Final board, DRC summary, board checks |
-| 3D views & fab files | 3D renders with real part models, Gerbers, drill, BOM and CPL (rotations corrected for JLCPCB), starter firmware for microcontroller boards | Renders, downloads, pin map |
-| JLCPCB quote | PCB + assembly + components + shipping, cheaper drop-in parts, panel options | Itemised quote you can re-run with other options |
+| DRC & copper pour | Ground pour, zone fill, KiCad DRC, then trace heating, voltage drop, decoupling-capacitor distances and controlled-impedance lengths | Final board, DRC summary, board checks |
+| 3D views & fab files | 3D renders with real part models, Gerbers, drill, BOM and CPL (rotations corrected for JLCPCB), an interactive assembly page, a bring-up guide, starter firmware for microcontroller boards | Renders, downloads, pin map, bring-up checklist |
+| JLCPCB quote | PCB + assembly + components + shipping, cheaper drop-in parts, panel options, OSH Park and PCBWay for comparison, a live stock check | Itemised quote you can re-run with other options |
 | AI visual review | The AI looks at the renders like a reviewer and fixes real problems | Review notes |
-| 3D-printed enclosure | The AI designs a box and FreeCAD builds and checks it | 3D preview, collision report, STL/STEP/FreeCAD downloads |
+| 3D-printed enclosure | The AI designs a box and FreeCAD builds and checks it, or fits the board to a box you already have | 3D preview, collision report, STL/STEP/FreeCAD downloads, drilling templates |
+| Project report | One PDF with the renders, quote, BOM, simulation, power budget, checks, bring-up steps and schematic | Download |
 
 If a step fails (a pad name is wrong, routing leaves connections open, DRC finds errors), the
 result goes back to the AI, which fixes the design and builds it again. You can also edit the
@@ -61,6 +63,67 @@ as free.
 - **AI visual review.** After a clean build, the AI is shown the 3D renders and looks for parts
   off the board, blocked connectors and hidden LEDs. Models that cannot see images skip this
   step, and *Settings → AI → Vision* turns it off.
+
+## Building blocks
+
+The designer starts from a library of proven circuits instead of drawing everything from scratch:
+USB-C power and data (with optional ESD protection), three 3.3 V regulators, ESP32-S3, ESP32-C3 and
+RP2040 cores with their support parts, a LiPo charger, CAN, RS-485, a USB-serial bridge, a Qwiic
+I²C connector, an indicator LED and a button. Each block has real LCSC parts and named ports; the
+design connects ports to its own nets, and the block's parts are renumbered and merged in. Blocks
+can also carry options (for example, leaving out the I²C pull-ups), supply definitions for the
+simulation and impedance rules. Put your own blocks as JSON files in `~/.wholeboard/blocks/`.
+
+## Two models: a worker and an expert
+
+*Settings → AI → Expert model* adds a second, stronger model. The everyday model does every turn:
+part searches, writing the design, fixing build errors. The expert is only called to plan the
+architecture once the requirements are clear, to review each clean build before ordering, when the
+worker has failed to build three times in a row, and when the worker asks it a question. A cheap
+or local worker with Claude Opus as the expert costs much less than running the expert on every
+turn. The token count in the header splits usage by model.
+
+## Power, heat and impedance
+
+- **Power budget.** After the simulation, each supply shows its typical and peak current against
+  its limit (500 mA for USB, the battery's rating, a bench supply's setting), each regulator its
+  load, headroom, dissipation and the thermal resistance it needs to stay cool, and each rail the
+  parts that draw from it. Battery boards can give an active/sleep duty cycle for a realistic
+  battery life.
+- **Controlled impedance.** The design can mark nets as 50 Ω single-ended or 90/100 Ω differential
+  pairs. The trace width and pair gap are worked out for JLCPCB's stack-up (JLC04161H-7628 on
+  4 layers), written to KiCad net classes, and TraceMaker routes the pairs together. After routing,
+  the lengths, skew and vias are checked, and the quote reminds you to order impedance control.
+  On 2-layer boards the widths are impractical, so the check says so (USB full speed is fine
+  without it).
+
+## Bring-up, assembly and flashing
+
+- **Test pads.** With `board.test_points`, every power rail and ground gets a test pad. They are
+  not part of the BOM.
+- **Bring-up guide.** A step-by-step checklist for the first board: what to look at, which nets to
+  check for shorts, a current-limited power-up with the expected current, rail voltages with
+  tolerances at their test pads, parts to feel for heat, LEDs and signals to see, how to program it
+  and which interfaces to test. It is in the outputs and in `exports/`.
+- **Assembly page.** A self-contained HTML page with the board from both sides and the BOM grouped
+  by who fits each part (JLCPCB, by hand, not fitted). Click a line to highlight its parts, and tick
+  them off as you go.
+- **Build and flash.** *Compile with PlatformIO* on the firmware card compiles the starter firmware
+  (it offers to install PlatformIO the first time; `python -m wholeboard.doctor --install platformio`
+  also installs it).
+  ESP32 boards can then be flashed from the browser over Web Serial (Chrome or Edge, on
+  `localhost` or HTTPS). RP2040 boards get a `.uf2` file to drop on the BOOTSEL drive.
+
+## Fitting a board to a case
+
+- **Board outline from a DXF.** *Board outline (DXF)* reads a drawing from your CAD program:
+  lines, arcs, circles and polylines, in millimetres or inches. The largest closed shape becomes
+  the board edge, and the circles inside it become mounting holes. The designer then builds the
+  board to that shape.
+- **A box you already have.** Instead of designing an enclosure, the design can name an existing
+  box with its inside size, wall, floor and standoff height. WholeBoard checks the board and its
+  tallest parts fit, then draws 1:1 drilling templates (SVG, with a 50 mm scale bar) for every
+  wall with a connector and for lid holes over LEDs and buttons.
 
 ## Starting from an existing KiCad project
 
@@ -156,6 +219,7 @@ datasheets before printing.
 - **FreeCAD 1.0 or newer** for enclosures. Found automatically, or set its path in Settings.
 - **ngspice** for simulation: the `ngspice` program, KiCad's own `libngspice`, or the KiCad Docker
   image. The installers add it, and *Settings → Install ngspice* fetches it on Windows and macOS.
+- **PlatformIO** (optional) to compile the starter firmware. WholeBoard and the doctor can install it.
 - **3D part models** are taken from your KiCad install. Any missing model is downloaded once from
   KiCad's library into `~/.wholeboard/models3d` (*Settings → KiCad & TraceMaker → 3D part models*).
 - **KiCad footprint and symbol libraries.** Normally installed with KiCad. If they are missing
@@ -221,6 +285,13 @@ you trust.
 - **Panels.** For small boards, or when it is cheaper, the quote suggests a panel (columns × rows,
   V-cut or tab routing, 5 mm rails) and compares the price. Choose a panel in the quote options to
   price it. JLCPCB builds it from the single-board files when you pick *Panel by JLCPCB*.
+- **Other fabs.** OSH Park's bare-board price is worked out from their published price per square
+  inch (sets of three, shipping included). PCBWay is shown with their promotional small-board
+  price, marked as indicative.
+- **Live stock check.** *Check stock* asks JLCPCB again for every part just before you order.
+  Parts that are short, low, discontinued or not found are flagged, with drop-in replacements.
+- **Project report.** A PDF of the whole board for a design review or your records, rebuilt after
+  each quote and enclosure.
 - The CPL is already corrected for JLCPCB's part orientations, but still check the assembly preview
   before ordering.
 
@@ -250,9 +321,12 @@ you trust.
 .venv/bin/python -m pytest -q
 ```
 
-Code map: `wholeboard/ai` (providers and the design agent), `wholeboard/kicad` (libraries,
+Code map: `wholeboard/ai` (providers, the design agent and the expert model), `wholeboard/blocks.py`
+(building blocks), `wholeboard/power.py`, `wholeboard/impedance.py`, `wholeboard/bringup.py`,
+`wholeboard/ibom.py` (assembly page), `wholeboard/fwbuild.py` (PlatformIO), `wholeboard/dxf.py`,
+`wholeboard/case.py` (stock boxes), `wholeboard/report.py` (PDF), `wholeboard/kicad` (libraries,
 board and schematic writers, kicad-cli, geometry for the viewer), `wholeboard/router.py`
-(TraceMaker), `wholeboard/jlc` (parts and quote), `wholeboard/pipeline.py` (the build steps),
+(TraceMaker), `wholeboard/jlc` (parts, quote, stock check, other fabs), `wholeboard/pipeline.py` (the build steps),
 `wholeboard/server.py` and `wholeboard/web` (API and interface).
 
 ## Licence

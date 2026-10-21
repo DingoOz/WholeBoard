@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import platform
 import re
@@ -294,6 +295,12 @@ def load_footprint(lib_id: str) -> Footprint | None:
         if sexpr.tag(g) in ("fp_line", "fp_rect", "fp_poly", "fp_circle", "fp_arc"):
             layer = find(g, "layer")
             if layer and str(layer[1]) in ("F.CrtYd", "B.CrtYd"):
+                c, e = find(g, "center"), find(g, "end")
+                if sexpr.tag(g) == "fp_circle" and c and e:      # a circle is its centre and one point on it
+                    r = math.hypot(num(e[1]) - num(c[1]), num(e[2]) - num(c[2]))
+                    xs += [num(c[1]) - r, num(c[1]) + r]
+                    ys += [num(c[2]) - r, num(c[2]) + r]
+                    continue
                 for pt in sexpr.walk(g):
                     if sexpr.tag(pt) in ("start", "end", "xy", "mid", "center"):
                         xs.append(num(pt[1]))

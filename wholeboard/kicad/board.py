@@ -8,7 +8,7 @@ import math
 import uuid
 from pathlib import Path
 
-from .. import design, sexpr
+from .. import design, impedance, sexpr
 from ..sexpr import S, Sym, find, fmt, num, tag
 from . import libs, schematic
 
@@ -89,6 +89,14 @@ def outline(w: float, h: float, r: float) -> list[list]:
     return items
 
 
+def polygon_outline(points: list) -> list[list]:
+    """A board outline from a polygon (mm from the board's top-left)."""
+    x0, y0 = ORIGIN
+    pts = [(x0 + float(p[0]), y0 + float(p[1])) for p in points]
+    return [[Sym("gr_line"), S(Sym("start"), *a), S(Sym("end"), *b), _stroke(), S(Sym("layer"), "Edge.Cuts"),
+             [Sym("uuid"), uid()]] for a, b in zip(pts, pts[1:] + pts[:1])]
+
+
 def zone(net: str, layer: str, w: float, h: float, inset: float, clearance: float,
          priority: int = 0) -> list:
     x0, y0 = ORIGIN
@@ -115,6 +123,20 @@ def _rotate_at(node: list, rot: float) -> None:
     del at[3:]
     if new:
         at.append(fmt(new))
+
+
+MIN_DRILL_MM = 0.3      # JLCPCB's standard-process smallest hole, as min_through_hole_diameter below
+
+
+def _min_drill(pad: list) -> None:
+    """Widen holes smaller than the fab's minimum (thermal vias under a module's ground pad are often 0.2 mm) to
+    0.3 mm, keeping at least a 0.1 mm copper ring."""
+    for n in pad:
+        if tag(n) == "drill" and len(n) == 2 and not isinstance(n[1], list) and 0 < num(n[1]) < MIN_DRILL_MM:
+            n[1] = fmt(MIN_DRILL_MM)
+            for s in pad:
+                if tag(s) == "size" and len(s) == 3:
+                    s[1], s[2] = fmt(max(num(s[1]), MIN_DRILL_MM + 0.2)), fmt(max(num(s[2]), MIN_DRILL_MM + 0.2))
 
 
 def footprint_instance(fp: libs.Footprint, ref: str, value: str, x: float, y: float,
@@ -148,6 +170,7 @@ def footprint_instance(fp: libs.Footprint, ref: str, value: str, x: float, y: fl
             _rotate_at(child, rot)
         if t == "pad":
             name = child[1] if len(child) > 1 and isinstance(child[1], str) else ""
+            _min_drill(child)
             for i in range(len(child) - 1, -1, -1):
                 if tag(child[i]) == "net":
                     del child[i]
@@ -226,16 +249,14 @@ def build(spec: dict, out_dir: Path) -> dict:
 
     mh = b.get("mounting_holes")
     if mh:
-        dia = float(mh.get("diameter_mm", 3.2))
-        inset = float(mh.get("inset_mm", 3.5))
-        size = {2.2: "M2", 2.7: "M2.5", 3.2: "M3", 4.3: "M4"}.get(round(dia, 1))
-        lib_id = f"MountingHole:MountingHole_{dia:g}mm" + (f"_{size}" if size else "")
-        fp = libs.load_footprint(lib_id) or libs.load_footprint("MountingHole:MountingHole_3.2mm_M3")
-        for i, (mx, my) in enumerate([(inset, inset), (w - inset, inset), (w - inset, h - inset),
-                                      (inset, h - inset)], start=1):
+        fp = libs.load_footprint(design.hole_footprint(spec)) or libs.load_footprint("MountingHole:MountingHole_3.2mm_M3")
+        for i, (mx, my) in enumerate(design.hole_positions(spec), start=1):
             pcb.append(footprint_instance(fp, f"H{i}", "MountingHole", x0 + mx, y0 + my, 0, True))
 
-    pcb += outline(w, h, float(b.get("corner_radius_mm") or 0))
+    if b.get("outline"):
+        pcb += polygon_outline(b["outline"])
+    else:
+        pcb += outline(w, h, float(b.get("corner_radius_mm") or 0))
 
     for layer, net in (b.get("planes") or {}).items():
         if layer in copper_layers(nlayers):
@@ -273,13 +294,15 @@ def add_ground_pour(pcb_path: Path, spec: dict) -> bool:
 def project_json(spec: dict) -> dict:
     r = spec["rules"]
     power = [n["name"] for n in spec["nets"] if n.get("class") == "power"]
+    controlled = impedance.netclasses(spec)
+    imp_nets = {n for k in controlled for n in k["nets"]}
 
-    def netclass(name: str, width: float, prio: int) -> dict:
+    def netclass(name: str, width: float, prio: int, dp_width: float = 0.2, dp_gap: float = 0.25) -> dict:
         return {
             "name": name, "clearance": r["clearance_mm"], "track_width": width,
             "via_diameter": r["via_diameter_mm"], "via_drill": r["via_drill_mm"],
             "microvia_diameter": 0.3, "microvia_drill": 0.1,
-            "diff_pair_width": 0.2, "diff_pair_gap": 0.25, "diff_pair_via_gap": 0.25,
+            "diff_pair_width": dp_width, "diff_pair_gap": dp_gap, "diff_pair_via_gap": 0.25,
             "bus_width": 12, "wire_width": 6, "line_style": 0, "priority": prio,
             "pcb_color": "rgba(0, 0, 0, 0.000)", "schematic_color": "rgba(0, 0, 0, 0.000)",
             "tuning_profile": "",
@@ -292,7 +315,7 @@ def project_json(spec: dict) -> dict:
                     # JLCPCB standard-process capabilities, with some margin.
                     "min_clearance": 0.127, "min_track_width": 0.127,
                     "min_via_diameter": 0.45, "min_via_annular_width": 0.1,
-                    "min_through_hole_diameter": 0.3, "min_hole_to_hole": 0.25,
+                    "min_through_hole_diameter": MIN_DRILL_MM, "min_hole_to_hole": 0.25,
                     "min_hole_clearance": 0.2, "min_copper_edge_clearance": r["edge_clearance_mm"],
                     "min_silk_clearance": 0.0, "min_text_height": 0.8, "min_text_thickness": 0.08,
                     "min_microvia_diameter": 0.2, "min_microvia_drill": 0.1,
@@ -308,11 +331,14 @@ def project_json(spec: dict) -> dict:
         "meta": {"filename": f"{spec['name']}.kicad_pro", "version": 3},
         "net_settings": {
             "classes": [netclass("Default", r["track_mm"], 2147483647),
-                        netclass("Power", r["power_track_mm"], 0)],
+                        netclass("Power", r["power_track_mm"], 0)]
+            + [netclass(k["name"], k["width"] or r["track_mm"], 1 + i, k["width"] or r["track_mm"],
+                        k["gap"] or max(r["clearance_mm"], 0.15)) for i, k in enumerate(controlled)],
             "meta": {"version": 5},
             "net_colors": None,
             "netclass_assignments": None,
-            "netclass_patterns": [{"netclass": "Power", "pattern": n} for n in power],
+            "netclass_patterns": [{"netclass": "Power", "pattern": n} for n in power if n not in imp_nets]
+            + [{"netclass": k["name"], "pattern": n} for k in controlled for n in k["nets"]],
         },
         "pcbnew": {"page_layout_descr_file": ""},
         "sheets": [], "text_variables": {},

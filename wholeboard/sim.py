@@ -51,6 +51,7 @@ supplies are guessed from connectors, batteries and power net names. Say what yo
     {"net": "OUT", "measure": "cutoff_hz", "min": 900, "max": 1100}                // -3 dB point
   ],
   "ambient_c": 25,
+  "battery_profile": {"active_pct": 5, "sleep_ma": 0.05},   // duty cycle for battery life (optional)
   "blocking": true                   // false: report problems but keep building
 }
 
@@ -1673,6 +1674,8 @@ def _analyse(nl: Netlist, plan: dict, data: dict, res: dict) -> None:
             add(p, current_ma=d["typ_ma"], peak_ma=d["peak_ma"],
                 supply_v=settled(d["supply"]) if d.get("supply") else None)
     res["parts"] = rows
+    res["loads"] = [dict(x) for x in nl.loads]
+    res["ambient_c"] = amb
 
     # ---- per-net current, for the trace-width check after routing
     net_i: dict[str, float] = {}

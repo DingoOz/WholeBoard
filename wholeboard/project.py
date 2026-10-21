@@ -45,6 +45,7 @@ class Project:
         # runtime only
         self.session = None
         self.worker: threading.Thread | None = None
+        self.fw_thread: threading.Thread | None = None
         self.cancel = threading.Event()
         self.answers: dict[str, str] = {}
         self.answer_ready = threading.Condition(self.lock)

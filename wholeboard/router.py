@@ -113,7 +113,14 @@ def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "rout
     if scratch:
         args.append("--scratch")
     _copy_project(pcb_in, pcb_out)
-    code = _stream(_cmd(exe, args, cfg), log, cancel, timeout=t * 6 + 300)
+    # routable mode trial-routes each candidate placement; on some footprints (a module whose thermal vias sit under
+    # its exposed pad) those trials never succeed and it overruns its time, so it gets a tighter limit and a fallback
+    code = _stream(_cmd(exe, args, cfg), log, cancel, timeout=t * (3 if mode == "routable" else 6) + 120)
+    if (code != 0 or not pcb_out.exists()) and mode == "routable" and not (cancel and cancel.is_set()):
+        log(f"Routability-checked placement did not finish (exit code {code}); placing without the routing check.")
+        pcb_out.unlink(missing_ok=True)
+        args[args.index("--mode") + 1] = "full"
+        code = _stream(_cmd(exe, args, cfg), log, cancel, timeout=t * 6 + 120)
     if code != 0 or not pcb_out.exists():
         raise RuntimeError(f"tracemaker-place exited with code {code}")
     return {"ok": True}
@@ -141,7 +148,7 @@ def viewer_token() -> str | None:
 
 def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | None = None,
           view_port: int | None = None, embed_origin: str | None = None,
-          reroute: bool = False) -> dict:
+          reroute: bool = False, diff_pairs: bool = False) -> dict:
     cfg = config.load()
     exe = find("tracemaker", cfg)
     if not exe:
@@ -153,6 +160,8 @@ def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | 
             "--stuck-report", str(stuck)]
     if reroute:
         args.append("--reroute")
+    if diff_pairs:
+        args.append("--diff-pairs")
     if view_port:
         args += ["--view", "--no-freeze", "--view-port", str(view_port)]
         token = viewer_token()

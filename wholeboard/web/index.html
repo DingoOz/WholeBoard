@@ -64,6 +64,8 @@
         <div class="ws-title"><h2 id="wsTitle"></h2><span class="pill" id="wsStatus"></span><span class="muted" id="wsNote"></span><span class="chip" id="wsUsage" hidden></span></div>
         <div class="ws-actions">
           <button class="btn ghost" id="historyBtn" type="button" title="Every build of this board: compare two or rebuild an old one">History</button>
+          <button class="btn ghost" id="outlineBtn" type="button" title="Give the board the shape (and mounting holes) from a DXF drawing, e.g. from your case maker">Board outline (DXF)</button>
+          <input type="file" id="outlineFile" accept=".dxf" hidden>
           <button class="btn ghost" id="editSpecBtn" type="button">Edit design JSON</button>
           <button class="btn ghost" id="folderBtn" type="button">Open folder</button>
           <button class="btn danger" id="stopBtn" type="button">Stop</button>
@@ -173,6 +175,16 @@
           </ul>
         </div>
       </details>
+      <fieldset class="expert">
+        <legend><label class="inline"><input type="checkbox" name="ai.expert.enabled"> Use an expert model to plan and review</label></legend>
+        <div data-show="ai.expert.enabled=true">
+          <p class="hint">The model above does the legwork (searches, writing the design, fixing build errors). The expert is called only to plan the architecture, review each clean build, and help after repeated failed builds: most of the quality for a fraction of the cost. A good pairing is a local or cheap model above with Claude here.</p>
+          <div class="grid2">
+            <label>Expert provider <select name="ai.expert.provider"><option value="anthropic">Claude (uses the Anthropic key)</option><option value="openai">OpenAI-compatible (uses the server above)</option></select></label>
+            <label>Expert model <input name="ai.expert.model" list="claudeModels" placeholder="claude-opus-5-5"></label>
+          </div>
+        </div>
+      </fieldset>
       <label>Turn limit per run <input name="ai.max_turns" type="number" min="5" max="400"></label>
       <label>Visual review of the board renders
         <select name="ai.vision">

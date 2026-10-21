@@ -7,7 +7,8 @@ A spec is plain JSON:
   "summary": "one paragraph",
   "board": {"width_mm": 50, "height_mm": 30, "layers": 2, "thickness_mm": 1.6,
             "corner_radius_mm": 1.0, "mounting_holes": {"diameter_mm": 3.2, "inset_mm": 3.5},
-            "ground_pour": "GND", "planes": {"In1.Cu": "GND", "In2.Cu": "+3V3"}},
+            "ground_pour": "GND", "planes": {"In1.Cu": "GND", "In2.Cu": "+3V3"},
+            "test_points": true},
   "rules": {"track_mm": 0.25, "power_track_mm": 0.5, "clearance_mm": 0.2,
             "via_diameter_mm": 0.6, "via_drill_mm": 0.3},
   "components": [{"ref": "U1", "value": "AMS1117-3.3",
@@ -28,6 +29,7 @@ import math
 import re
 from dataclasses import dataclass, field
 
+from . import blocks, impedance
 from .kicad import libs
 
 REF_RE = re.compile(r"^[A-Z]+[A-Z_]*\d+$")
@@ -58,10 +60,16 @@ class Report:
 
 def normalise(spec: dict) -> dict:
     """Fill defaults so later stages can rely on every key."""
-    spec = dict(spec)
+    spec = blocks.expand(dict(spec))
     spec.setdefault("name", "board")
     spec["name"] = re.sub(r"[^A-Za-z0-9_-]+", "_", str(spec["name"])).strip("_") or "board"
     b = dict(spec.get("board") or {})
+    if b.get("outline"):
+        pts = [[float(p[0]), float(p[1])] for p in b["outline"]]
+        mx, my = min(p[0] for p in pts), min(p[1] for p in pts)
+        b["outline"] = [[round(p[0] - mx, 4), round(p[1] - my, 4)] for p in pts]
+        b["width_mm"] = round(max(p[0] for p in b["outline"]), 4)
+        b["height_mm"] = round(max(p[1] for p in b["outline"]), 4)
     b.setdefault("width_mm", 50.0)
     b.setdefault("height_mm", 50.0)
     b.setdefault("layers", 2)
@@ -77,7 +85,87 @@ def normalise(spec: dict) -> dict:
     for n in spec["nets"]:
         n.setdefault("class", "signal")
         n["pins"] = [str(p) for p in n.get("pins") or []]
+    if b.get("test_points"):
+        _add_test_points(spec, b["test_points"])
+        _place_test_points(spec)
     return spec
+
+
+TEST_POINT_FP = "TestPoint:TestPoint_Pad_D1.5mm"
+
+
+def _add_test_points(spec: dict, which) -> None:
+    """Bare copper pads on the supply rails (or the nets listed), for probing during bring-up."""
+    have = {c.get("test_point_for") for c in spec["components"] if c.get("test_point_for")}
+    nets = {n["name"]: n for n in spec["nets"]}
+    if isinstance(which, list):
+        wanted = [str(x) for x in which]
+    else:
+        wanted = [n["name"] for n in spec["nets"] if n.get("class") == "power"][:8]
+    used = {str(c.get("ref")) for c in spec["components"]}
+    k = 1
+    for net in wanted:
+        if net in have or net not in nets:
+            continue
+        while f"TP{k}" in used:
+            k += 1
+        ref = f"TP{k}"
+        used.add(ref)
+        spec["components"].append({"ref": ref, "value": net, "footprint": TEST_POINT_FP, "symbol": "Connector:TestPoint",
+                                   "description": f"Test point for {net}", "test_point_for": net,
+                                   "sim": {"skip": True}})
+        nets[net]["pins"].append(f"{ref}.1")
+
+
+def _place_test_points(spec: dict) -> None:
+    """Put unplaced test pads in a row along a board edge, where a probe can reach them.
+
+    TraceMaker's placer does not move test points (and its routability check stalls on them), so they are fixed
+    here: along the bottom edge first, then the top, left and right, clear of mounting holes and fixed parts."""
+    tps = [c for c in spec["components"] if c.get("test_point_for") and "x_mm" not in (c.get("placement") or {})]
+    if not tps:
+        return
+    b = spec["board"]
+    w, h = float(b["width_mm"]), float(b["height_mm"])
+    poly = b.get("outline") or [[0, 0], [w, 0], [w, h], [0, h]]
+    holes = hole_positions(spec)
+    hfp = libs.load_footprint(hole_footprint(spec)) if holes else None
+    hole_r = max(abs(v) for v in hfp.courtyard) if hfp else 3.5
+    tfp = libs.load_footprint(TEST_POINT_FP)
+    r = (max(abs(v) for v in tfp.courtyard) if tfp else 1.25) + 0.25   # test pad courtyard plus a margin
+    boxes = []                                    # fixed parts' courtyards on the board
+    for c in spec["components"]:
+        pl = c.get("placement") or {}
+        if "x_mm" not in pl or c.get("test_point_for"):
+            continue
+        fp = libs.load_footprint(c.get("footprint") or "")
+        x0, y0, x1, y1 = fp.courtyard if fp else (-2, -2, 2, 2)
+        if round(float(pl.get("rotation") or 0)) % 180 == 90:
+            x0, y0, x1, y1 = y0, x0, y1, x1
+        x, y = float(pl["x_mm"]), float(pl["y_mm"])
+        boxes.append((x + x0, y + y0, x + x1, y + y1))
+    taken = [(float(c["placement"]["x_mm"]), float(c["placement"]["y_mm"])) for c in spec["components"]
+             if c.get("test_point_for") and "x_mm" in (c.get("placement") or {})]
+    inset = 2.0                                   # pad centre from the board edge
+    lines = [[(x, h - inset) for x in _steps(inset, w - inset)], [(x, inset) for x in _steps(inset, w - inset)],
+             [(inset, y) for y in _steps(inset, h - inset)], [(w - inset, y) for y in _steps(inset, h - inset)]]
+    for x, y in (pt for line in lines for pt in line):
+        if not tps:
+            return
+        if not inside(poly, x, y) or edge_distance(poly, x, y) < inset - 0.01:
+            continue
+        if any(math.hypot(x - hx, y - hy) < hole_r + r for hx, hy in holes):
+            continue
+        if any(bx0 - r < x < bx1 + r and by0 - r < y < by1 + r for bx0, by0, bx1, by1 in boxes):
+            continue
+        if any(math.hypot(x - tx, y - ty) < 2 * r for tx, ty in taken):
+            continue
+        tps.pop(0)["placement"] = {"x_mm": round(x, 2), "y_mm": round(y, 2), "locked": True}
+        taken.append((x, y))
+
+
+def _steps(a: float, b: float, step: float = 0.5) -> list[float]:
+    return [round(a + i * step, 3) for i in range(int((b - a) / step) + 1)]
 
 
 def validate(spec: dict) -> Report:
@@ -100,6 +188,14 @@ def validate(spec: dict) -> Report:
         if layer not in ("In1.Cu", "In2.Cu", "In3.Cu", "In4.Cu"):
             rep.errors.append(f"board.planes: unknown layer {layer!r}")
 
+    rep.errors += spec.get("block_errors") or []
+    case = b.get("case")
+    if case is not None:
+        inner = case.get("inner_mm") if isinstance(case, dict) else None
+        if not (isinstance(inner, list) and len(inner) == 3 and all(isinstance(v, (int, float)) and v > 0 for v in inner)):
+            rep.errors.append("board.case.inner_mm must be [length, width, height] in mm, from the box maker's drawing")
+        elif w > inner[0] or h > inner[1]:
+            rep.errors.append(f"the {w:g} × {h:g} mm board is bigger than the case's {inner[0]:g} × {inner[1]:g} mm inside")
     if not spec["components"]:
         rep.errors.append("the design has no components")
 
@@ -130,7 +226,7 @@ def validate(spec: dict) -> Report:
         fps[ref] = fp
         x0, y0, x1, y1 = fp.courtyard
         area += (x1 - x0) * (y1 - y0)
-        if not c.get("lcsc") and not c.get("dnp") and not fid.startswith("MountingHole"):
+        if not c.get("lcsc") and not c.get("dnp") and not fid.startswith(("MountingHole", "TestPoint")):
             rep.warnings.append(f"{ref}: no LCSC part number, so JLCPCB cannot assemble or price it")
 
     used: dict[str, str] = {}
@@ -174,11 +270,54 @@ def validate(spec: dict) -> Report:
                                 f"(list them in no_connect if that is intended)")
 
     _check_fixed(spec, fps, rep, w, h)
+    ie, iw = impedance.validate(spec)
+    rep.errors += ie
+    rep.warnings += iw
 
-    if area > 0 and w * h < area * 1.8:
-        rep.errors.append(f"board area {w * h:.0f} mm² is too small for parts that need about "
+    board_area = w * h
+    if b.get("outline"):
+        board_area = abs(sum(p[0] * q[1] - q[0] * p[1] for p, q in zip(b["outline"], b["outline"][1:] + b["outline"][:1]))) / 2
+        if len(b["outline"]) < 3:
+            rep.errors.append("board.outline needs at least three points")
+    if area > 0 and board_area < area * 1.8:
+        rep.errors.append(f"board area {board_area:.0f} mm² is too small for parts that need about "
                           f"{area:.0f} mm² of courtyard; make it at least {area * 2.2:.0f} mm²")
     return rep
+
+
+def hole_positions(spec: dict) -> list[tuple[float, float]]:
+    """Mounting hole centres: the listed positions, or one in each corner."""
+    b = spec["board"]
+    mh = b.get("mounting_holes") or {}
+    if not mh:
+        return []
+    if mh.get("positions"):
+        return [(float(p[0]), float(p[1])) for p in mh["positions"]]
+    w, h, inset = float(b["width_mm"]), float(b["height_mm"]), float(mh.get("inset_mm", 3.5))
+    return [(inset, inset), (w - inset, inset), (w - inset, h - inset), (inset, h - inset)]
+
+
+def hole_footprint(spec: dict) -> str:
+    dia = float((spec["board"].get("mounting_holes") or {}).get("diameter_mm", 3.2))
+    size = {2.2: "M2", 2.7: "M2.5", 3.2: "M3", 4.3: "M4"}.get(round(dia, 1))
+    return f"MountingHole:MountingHole_{dia:g}mm" + (f"_{size}" if size else "")
+
+
+def inside(poly: list, x: float, y: float) -> bool:
+    hit = False
+    for (ax, ay), (bx, by) in zip(poly, poly[1:] + poly[:1]):
+        if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / (by - ay):
+            hit = not hit
+    return hit
+
+
+def edge_distance(poly: list, x: float, y: float) -> float:
+    best = math.inf
+    for (ax, ay), (bx, by) in zip(poly, poly[1:] + poly[:1]):
+        dx, dy = bx - ax, by - ay
+        t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy or 1e-12)))
+        best = min(best, math.hypot(x - ax - t * dx, y - ay - t * dy))
+    return best
 
 
 def pin_net_map(spec: dict) -> dict[str, str]:
@@ -224,7 +363,15 @@ def _check_fixed(spec: dict, fps: dict, rep: Report, w: float, h: float) -> None
             rr = max(p.w, p.h) / 2
             px, py = _rot(p.x, p.y, r)
             pads.append((x + px - rr, y + py - rr, x + px + rr, y + py + rr))
-        if pads:
+        poly = spec["board"].get("outline")
+        if pads and poly:
+            bad = [(px0, py0) for b in pads for px0, py0 in ((b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3]))
+                   if not inside(poly, px0, py0) or edge_distance(poly, px0, py0) < edge]
+            if bad:
+                rep.errors.append(f"{c['ref']} at ({x:g}, {y:g}) rot {r:g}: some of its pads are outside the board "
+                                  f"outline or closer than {edge} mm to it (near {bad[0][0]:.1f}, {bad[0][1]:.1f}). "
+                                  "Move it inward.")
+        elif pads:
             pb = _box([(b[0], b[1]) for b in pads] + [(b[2], b[3]) for b in pads])
             if pb[0] < edge or pb[1] < edge or pb[2] > w - edge or pb[3] > h - edge:
                 rep.errors.append(
@@ -237,10 +384,12 @@ def _check_fixed(spec: dict, fps: dict, rep: Report, w: float, h: float) -> None
         boxes.append((c["ref"], court))
     mh = spec["board"].get("mounting_holes")
     if mh:
-        inset = float(mh.get("inset_mm", 3.5))
         rad = float(mh.get("diameter_mm", 3.2)) / 2 + 0.6
-        for i, (mx, my) in enumerate([(inset, inset), (w - inset, inset), (w - inset, h - inset),
-                                      (inset, h - inset)], start=1):
+        poly = spec["board"].get("outline")
+        for i, (mx, my) in enumerate(hole_positions(spec), start=1):
+            if poly and (not inside(poly, mx, my) or edge_distance(poly, mx, my) < rad):
+                rep.errors.append(f"mounting hole H{i} at ({mx:g}, {my:g}) is outside the board outline or too close "
+                                  "to its edge; give mounting_holes.positions inside the outline")
             boxes.append((f"mounting hole H{i} at ({mx:g}, {my:g})", (mx - rad, my - rad, mx + rad, my + rad)))
     for i in range(len(boxes)):
         for j in range(i + 1, len(boxes)):

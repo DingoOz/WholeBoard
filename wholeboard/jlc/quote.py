@@ -57,7 +57,7 @@ def bom_rows(spec: dict) -> list[dict]:
     spec = design.normalise(spec)
     groups: dict[tuple, dict] = {}
     for c in spec["components"]:
-        if c.get("dnp") or str(c.get("footprint", "")).startswith("MountingHole"):
+        if c.get("dnp") or str(c.get("footprint", "")).startswith(("MountingHole", "TestPoint")):
             continue
         fp = libs.load_footprint(c["footprint"])
         smd_pads = tht_pads = 0

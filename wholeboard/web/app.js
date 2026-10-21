@@ -132,6 +132,7 @@ function handleEvent(e, replay) {
     case "finish": addFinish(e.text); break;
     case "status": setStatus(e.status, e.note); if (!replay) loadProjects(); break;
     case "usage": showUsage(e); break;
+    case "stock": S.project.stock = e; if (S.selStep === "quote") renderStage(); break;
     case "step":
       S.project.steps[e.key] = { status: e.status, detail: e.detail };
       updateStep(e.key);
@@ -211,7 +212,8 @@ function showUsage(u) {
   chip.hidden = false;
   chip.textContent = `AI ${k(tokens)} in · ${k(u.output || 0)} out` + (u.priced ? ` · $${(u.cost || 0).toFixed(2)}` : "");
   chip.title = `${u.turns} AI turns with ${u.model || "the AI"}\nInput ${(u.input || 0).toLocaleString()} tokens, cache reads ${(u.cache_read || 0).toLocaleString()}, cache writes ${(u.cache_write || 0).toLocaleString()}\nOutput ${(u.output || 0).toLocaleString()} tokens`
-    + (u.priced ? `\nAbout $${(u.cost || 0).toFixed(4)} at list prices` : "\nPrice unknown for this model: set it in Settings");
+    + (u.priced ? `\nAbout $${(u.cost || 0).toFixed(4)} at list prices` : "\nPrice unknown for this model: set it in Settings")
+    + (Object.keys(u.by_model || {}).length > 1 ? "\n" + Object.entries(u.by_model).map(([m, x]) => `${m}: ${x.turns} turns, $${x.cost.toFixed(3)}`).join("\n") : "");
 }
 
 function setStatus(status, note) {
@@ -300,7 +302,7 @@ function renderStage() {
   stage.innerHTML = "";
   const key = S.selStep;
   const vis = S.visuals[key] || {};
-  const order = ["import", "viewer", "board", "svg", "erc", "sim", "netlist", "drc", "checks", "images", "files", "firmware", "review", "enclosure", "quote"];
+  const order = ["import", "viewer", "board", "svg", "erc", "sim", "power", "netlist", "drc", "checks", "impedance", "images", "files", "report", "bringup", "firmware", "review", "case", "enclosure", "quote"];
   const kinds = Object.keys(vis).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   if (key === "route" && !S.liveViewer) { const i = kinds.indexOf("viewer"); if (i >= 0) kinds.splice(i, 1); }
   if (!kinds.length) {
@@ -381,9 +383,49 @@ const RENDER = {
     return card(v.title, body, { right: el("a", { href: "https://cart.jlcpcb.com/quote", target: "_blank" }, "Order at JLCPCB ↗") });
   },
   quote(v) { return renderQuote(v); },
+  power(v) { return renderPower(v); },
+  impedance(v) {
+    const r = v.report, body = el("div");
+    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(x => el("li", {}, x))));
+    for (const g of r.groups) {
+      body.append(el("h5", {}, el("span", {}, `${g.nets.join(" / ")}: ${g.ohms} Ω ${g.kind === "diff" ? "differential pair" : "single-ended"}`),
+        el("span", { class: "muted" }, g.stackup)),
+        el("p", { class: "muted" }, g.practical ? `Target ${g.width_mm} mm wide` + (g.gap_mm ? `, ${g.gap_mm} mm apart` : "") +
+          ` (≈${g.achieved} Ω over ${g.h_mm} mm of dielectric, εr ${g.er})` : g.note || ""),
+        table(["Net", "Length", "Narrowest", "Vias"], g.members.map(m => [el("b", {}, m.net), `${m.length_mm} mm`, m.width_mm != null ? `${m.width_mm} mm` : "–", m.vias])),
+        g.skew_mm != null ? el("p", {}, `Length difference ${g.skew_mm} mm (limit ${g.max_skew_mm} mm)`) : "");
+    }
+    if (r.order_note) body.append(el("p", {}, el("b", {}, r.order_note)));
+    return card(v.title, body);
+  },
+  bringup(v) {
+    const body = el("div", {}, el("p", { class: "muted" }, "Work through this when the boards arrive." +
+      (v.test_points?.length ? ` Test pads: ${v.test_points.map(t => `${t.ref} = ${t.net}`).join(", ")}.` : "")));
+    v.steps.forEach((st, i) => {
+      body.append(el("h5", {}, `${i + 1}. ${st.title}`), el("ul", { class: "checklist" }, st.items.map(x => el("li", {}, el("label", {}, el("input", { type: "checkbox" }), " ", x)))));
+      if (st.table?.rows?.length) body.append(table(st.table.head, st.table.rows));
+    });
+    return card(v.title, body, { right: el("a", { href: v.url, download: v.name }, "⬇ " + v.name) });
+  },
+  report(v) {
+    const btn = el("button", { class: "btn", type: "button" }, "Make it again");
+    btn.onclick = async () => { btn.disabled = true; try { await api(`/api/projects/${S.pid}/report`, { method: "POST" }); } finally { btn.disabled = false; } };
+    return card(v.title, el("div", { class: "row-actions" }, el("a", { class: "btn primary", href: v.url, target: "_blank" }, "Open " + v.name), btn,
+      el("span", { class: "muted" }, `Summary, renders, cost, BOM, simulation, power, enclosure, bring-up checklist and the schematic. Made ${v.made || ""}.`)));
+  },
+  case(v) {
+    const r = v.result, c = r.case;
+    const body = el("div", {}, el("p", {}, `Inside ${c.L} × ${c.W} × ${c.H} mm; the board sits at (${c.ax}, ${c.ay}) mm on ${c.standoff} mm standoffs, with ${r.headroom_mm} mm above the tallest part.`));
+    if (r.problems.length) body.append(el("ul", { class: "list-err" }, r.problems.map(x => el("li", {}, x))));
+    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(x => el("li", {}, x))));
+    if (r.cutouts.length) body.append(table(["Face", "Part", "Hole", "Position (from the face's bottom-left)"], r.cutouts.map(k =>
+      [k.face, k.ref, k.shape === "circle" ? `⌀${k.d} mm` : `${k.w} × ${k.h} mm`, k.shape === "circle" ? `centre ${k.u}, ${k.v} mm` : `corner ${k.u}, ${k.v} mm`])));
+    body.append(el("div", { class: "files" }, v.files.map(f => el("a", { class: "btn", href: f.url, target: "_blank" }, f.label))));
+    return card(v.title, body, { right: el("a", { href: v.page, target: "_blank" }, "Print the templates ↗") });
+  },
   firmware(v) {
     const f = v.firmware;
-    return card(v.title, el("div", {},
+    return card(v.title, el("div", {}, firmwareBuild(v, f),
       el("p", { class: "muted" }, `A PlatformIO project (Arduino framework, env ${f.env}). include/pins.h names each pin after its net; src/main.cpp blinks the LEDs, reads buttons and analog inputs and scans I²C. Upload with: pio run -t upload`),
       f.pins.length ? table(["Macro", "Pin", "Pad", "Symbol pin", "Net", "Use", "Connects to"],
         f.pins.map(r => [el("code", {}, r.macro), String(r.gpio), r.pad, r.pin_name, r.net, r.role.replace("_", " "), r.connects.join(", ")])) : el("p", {}, "No GPIO pins found."),
@@ -499,6 +541,115 @@ function renderSim(v) {
   return card(v.title, body, { right: v.netlist ? el("a", { href: v.netlist, target: "_blank" }, "SPICE netlist") : "" });
 }
 
+function renderPower(v) {
+  const b = v.budget, body = el("div");
+  if (b.notes?.length) body.append(el("ul", { class: "list-warn" }, b.notes.map(x => el("li", {}, x))));
+  const bar = pct => pct == null ? "–" : el("span", { class: "meter" + (pct > 90 ? " bad" : pct > 75 ? " warn" : "") },
+    el("i", { style: `width:${Math.min(pct, 100)}%` }), el("b", {}, `${Math.round(pct)} %`));
+  if (b.supplies.length) body.append(el("h5", {}, "Supplies"), table(["Input", "Typical", "Peak", "Can supply", "Used at peak"],
+    b.supplies.map(s => [el("b", {}, s.net), `${n3(s.current_ma)} mA`, `${n3(s.peak_ma)} mA`, s.max_ma ? `${s.max_ma} mA` : "–", bar(s.use_pct)])));
+  if (b.regulators.length) body.append(el("h5", {}, "Regulators"), table(["Part", "In → out", "Load (typ / peak)", "Rating", "Used", "Heat", "Junction"],
+    b.regulators.map(r => [el("b", {}, `${r.ref} ${r.value || ""}`), `${n3(r.vin)} → ${n3(r.vout)} V`, `${n3(r.current_ma)} / ${n3(r.peak_ma)} mA`,
+      r.max_ma ? `${r.max_ma} mA` : "–", bar(r.use_pct), r.power_mw != null ? `${n3(r.power_mw)} mW` : "–", r.temp_c != null ? `${Math.round(r.temp_c)} °C` : "–"])));
+  for (const r of b.rails) body.append(el("h5", {}, el("span", {}, `${r.net} loads`), el("span", { class: "muted" }, `${n3(r.typ_ma)} mA typical, ${n3(r.peak_ma)} mA peak`)),
+    table(["Part", "Typical", "Peak"], r.loads.map(l => [l.ref, `${n3(l.typ_ma)} mA`, `${n3(l.peak_ma)} mA`])));
+  for (const bt of b.battery) body.append(el("h5", {}, `Battery on ${bt.net} (${bt.capacity_mah} mAh)`),
+    el("p", {}, `${bt.hours_typical ?? "–"} h at the typical draw, ${bt.hours_peak ?? "–"} h flat out` +
+      (bt.profile ? `; ${bt.profile.hours} h if active ${bt.profile.active_pct}% of the time and drawing ${bt.profile.sleep_ma} mA asleep.` : ". Add simulation.battery_profile if it sleeps.")));
+  if (b.thermal.length) body.append(el("h5", {}, "Hottest parts"), table(["Part", "Dissipates", "Temperature", "Margin"],
+    b.thermal.map(t => [`${t.ref} ${t.value || ""}`, `${n3(t.power_mw)} mW`, `${Math.round(t.temp_c)} °C`,
+      el("span", { class: t.margin_c < 20 ? "bad-text" : "" }, `${Math.round(t.margin_c)} °C below ${t.limit_c} °C`)])));
+  return card(v.title, body);
+}
+
+function firmwareBuild(v, f) {
+  const b = v.build || {}, box = el("div", { class: "fw-build" });
+  const build = el("button", { class: "btn" + (b.status ? "" : " primary"), type: "button" }, b.status === "running" ? "Compiling…" : b.status ? "Compile again" : "Compile with PlatformIO");
+  build.disabled = b.status === "running";
+  build.onclick = async () => {
+    build.disabled = true;
+    try { await api(`/api/projects/${S.pid}/firmware/build`, { method: "POST" }); }
+    catch (e) {
+      if (/not installed/i.test(e.message) && confirm("PlatformIO is not installed. Install it now (pip, about 1 minute)?")) {
+        await api("/api/tools/platformio/install", { method: "POST" }); await api(`/api/projects/${S.pid}/firmware/build`, { method: "POST" });
+      } else alert(e.message);
+    }
+  };
+  box.append(el("div", { class: "row-actions" }, build,
+    el("span", { class: "muted" }, b.status === "running" ? "The first build of a chip family downloads its compiler; follow it in the log." :
+      b.status === "done" ? `Compiled in ${b.seconds} s. ${(b.usage || []).join(" · ")}` : b.status === "failed" ? "It did not compile:" : "Proves the starter firmware compiles, then flash it from here.")));
+  if (b.status === "failed" && b.error) box.append(el("pre", { class: "log-pre" }, b.error));
+  if (b.status === "done") {
+    if (b.kind === "esp") box.append(flashEsp(b));
+    else if (b.files?.length) box.append(el("p", {}, ...b.files.map(x => el("a", { class: "btn", href: x.url, download: x.name }, "⬇ " + x.name)), " ",
+      el("span", { class: "muted" }, b.kind === "uf2" ? "Hold BOOTSEL while plugging in USB, then drop firmware.uf2 on the drive that appears." :
+        b.kind === "hex" ? "Flash it with avrdude or your ISP programmer (pio run -t upload does this)." : "Flash it with an ST-Link or pio run -t upload.")));
+  }
+  return box;
+}
+
+function flashEsp(b) {
+  const out = el("div", { class: "flash" }), log = el("pre", { class: "log-pre", hidden: true });
+  const btn = el("button", { class: "btn primary", type: "button" }, `Flash over USB (${b.chip})`);
+  const why = !("serial" in navigator) ? "Your browser has no Web Serial: use Chrome, Edge or Opera on a desktop." :
+    !window.isSecureContext ? `Web Serial needs a secure page: open WholeBoard as http://localhost:${location.port || 80} on the computer the board is plugged into.` : "";
+  btn.disabled = !!why;
+  btn.onclick = async () => {
+    log.hidden = false; log.textContent = "";
+    const say = t => { log.textContent += t + "\n"; log.scrollTop = log.scrollHeight; };
+    let transport;
+    try {
+      const { ESPLoader, Transport } = await import("https://unpkg.com/esptool-js@0.5.7/bundle.js");
+      const port = await navigator.serial.requestPort();
+      transport = new Transport(port, true);
+      const term = { clean() {}, writeLine: say, write: t => { log.textContent += t; } };
+      const loader = new ESPLoader({ transport, baudrate: 460800, romBaudrate: 115200, terminal: term });
+      say("Connecting… (if it hangs, hold BOOT and tap RESET)");
+      say("Chip: " + await loader.main());
+      const files = [];
+      for (const f of b.files) {
+        const buf = new Uint8Array(await (await fetch(f.url)).arrayBuffer());
+        let s = ""; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+        files.push({ data: s, address: f.offset });
+      }
+      await loader.writeFlash({ fileArray: files, flashSize: "keep", flashMode: "keep", flashFreq: "keep", eraseAll: false, compress: true,
+        reportProgress: (i, done, total) => { btn.textContent = `Flashing ${b.files[i].name} ${Math.round(100 * done / total)} %`; } });
+      await loader.after("hard_reset");
+      say("Done: the board has restarted with the new firmware.");
+    } catch (e) { say("Failed: " + (e.message || e)); }
+    finally { try { await transport?.disconnect(); } catch (e) { /* already closed */ } btn.textContent = `Flash over USB (${b.chip})`; }
+  };
+  out.append(el("div", { class: "row-actions" }, btn, el("span", { class: "muted" }, why || "Plug the board in by USB, click, and pick its serial port."),
+    ...b.files.map(x => el("a", { href: x.url, download: x.name, class: "muted", title: `at 0x${x.offset.toString(16)}` }, x.name))), log);
+  return out;
+}
+
+function renderStock(q) {
+  const st = S.project.stock, box = el("div", { class: "stock" });
+  const btn = el("button", { class: "btn primary", type: "button" }, st ? "Check again" : "Check stock now");
+  btn.onclick = async () => { btn.disabled = true; btn.textContent = "Checking…"; try { await api(`/api/projects/${S.pid}/stock`, { method: "POST" }); } catch (e) { alert(e.message); btn.disabled = false; } };
+  box.append(el("h5", {}, el("span", {}, "Before you order: live stock"), el("span", { class: "muted" }, st ? `checked ${st.checked_at}` : "")),
+    el("div", { class: "row-actions" }, btn, el("span", { class: "muted" }, "Stock changes daily: check right before ordering.")));
+  if (st) {
+    const bad = st.lines.filter(l => l.status !== "ok");
+    box.append(el("p", { class: st.ok ? "good-text" : "bad-text" }, st.ok ? `All ${st.lines.length} lines in stock for ${st.boards} boards` + (st.low ? `; ${st.low} running low.` : ".") :
+      `${st.problems} line${st.problems > 1 ? "s" : ""} cannot be supplied for ${st.boards} boards.`));
+    if (bad.length) box.append(table(["Refs", "Part", "Status", "Stock", "Need", "Note"], bad.map(l => [l.refs.join(", "), l.lcsc || "–",
+      el("span", { class: "tag " + (["short", "unavailable", "not found"].includes(l.status) ? "bad" : "extended") }, l.status), l.stock?.toLocaleString?.() ?? "–", l.order_qty ?? l.need, l.note || ""])));
+    if (st.replacements?.length) box.append(el("p", {}, "In-stock replacements: ", ...st.replacements.map(x => el("span", { class: "chip" }, `${x.refs.join(", ")} → ${x.to.lcsc} ${x.to.mpn || ""}`))),
+      el("p", { class: "muted" }, "Apply them from the Cheaper parts list above, or ask the designer."));
+  }
+  return box;
+}
+
+function renderFabs(q) {
+  if (!q.fabs?.length) return "";
+  return el("details", {}, el("summary", {}, "Bare boards at other fabs"),
+    table(["Fab", "Boards", "Price", "Shipping", "Lead time", "Notes"], q.fabs.map(x => [el("a", { href: x.url, target: "_blank" }, x.fab), x.boards ?? "–",
+      x.total != null ? money(x.total) + (x.kind === "indicative" ? " (indicative)" : "") : "quote online", x.shipping || "–", x.lead_time || "–",
+      el("span", { class: "muted" }, (x.basis ? x.basis + ". " : "") + (x.notes || ""))])));
+}
+
 function renderQuote(v) {
   const q = v.quote, o = v.options || {};
   const sec = (title, part) => part ? [el("h5", {}, el("span", {}, title), el("span", {}, money(part.subtotal))),
@@ -548,7 +699,7 @@ function renderQuote(v) {
   left.append(...sec("Shipping", q.shipping));
   left.append(el("div", { class: "quote-total" }, el("span", {}, "Total"), el("span", {}, money(q.total))),
     el("div", { class: "muted" }, `${money(q.per_board)} per ${q.assembly ? "assembled" : ""} board`),
-    el("ul", { class: "assume" }, q.assumptions.map(a => el("li", {}, a))));
+    el("ul", { class: "assume" }, q.assumptions.map(a => el("li", {}, a))), renderFabs(q), renderStock(q));
 
   const f = el("form", { class: "quote-form" });
   const field = (label, input) => el("label", {}, label, input);
@@ -723,8 +874,7 @@ async function openSettings() {
   const cfg = await api("/api/config");
   const form = $("#settingsForm");
   for (const input of form.querySelectorAll("[name]")) {
-    const [a, b] = input.name.split(".");
-    const v = cfg[a]?.[b];
+    const v = input.name.split(".").reduce((o, k) => o?.[k], cfg);
     if (input.type === "checkbox") input.checked = !!v; else input.value = v ?? "";
   }
   syncShow();
@@ -735,17 +885,19 @@ function syncShow() {
   const form = $("#settingsForm");
   for (const box of form.querySelectorAll("[data-show]")) {
     const [name, val] = box.dataset.show.split("=");
-    box.hidden = form.querySelector(`[name="${name}"]`).value !== val;
+    const ctl = form.querySelector(`[name="${name}"]`);
+    box.hidden = (ctl.type === "checkbox" ? String(ctl.checked) : ctl.value) !== val;
   }
 }
 
 async function saveSettings() {
   const form = $("#settingsForm"), patch = {};
   for (const input of form.querySelectorAll("[name]")) {
-    const [a, b] = input.name.split(".");
+    const keys = input.name.split(".");
     let v = input.type === "checkbox" ? input.checked : input.value;
     if (input.type === "number") v = Number(v);
-    (patch[a] ||= {})[b] = v;
+    const leaf = keys.pop();
+    keys.reduce((o, k) => (o[k] ||= {}), patch)[leaf] = v;
   }
   await api("/api/config", { method: "POST", body: patch });
   $("#settings").close();
@@ -886,6 +1038,15 @@ function init() {
   $("#netSet").onclick = () => { const v = $("#netPassword").value; if (v.length < 6) { $("#netMsg").textContent = "Use at least 6 characters."; return; } setPw(v); };
   $("#netClear").onclick = () => { if (confirm("Remove the password? Anyone on the network can then use WholeBoard.")) setPw(""); };
   $("#historyBtn").onclick = () => openHistory().catch(e => { $("#historyList").textContent = e.message; });
+  $("#outlineBtn").onclick = () => $("#outlineFile").click();
+  $("#outlineFile").onchange = async ev => {
+    const file = ev.target.files[0]; ev.target.value = "";
+    if (!file) return;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    try { await api(`/api/projects/${S.pid}/outline`, { method: "POST", body: { name: file.name, data: btoa(bin) } }); }
+    catch (e) { alert(e.message); }
+  };
   $("#stopBtn").onclick = () => api(`/api/projects/${S.pid}/cancel`, { method: "POST" });
   $("#deleteBtn").onclick = async () => {
     if (!confirm("Delete this board and all its files? This cannot be undone.")) return;
