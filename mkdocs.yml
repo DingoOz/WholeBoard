@@ -1,0 +1,146 @@
+site_name: WholeBoard
+site_description: An AI workbench for printed circuit boards, with KiCad, TraceMaker, ngspice, JLCPCB and FreeCAD
+site_url: https://dingooz.github.io/WholeBoard/
+repo_url: https://github.com/DingoOz/WholeBoard
+repo_name: DingoOz/WholeBoard
+edit_uri: edit/main/docs/
+copyright: WholeBoard is free software under the GNU GPL, version 3 or later.
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: green
+      accent: amber
+      toggle: {icon: material/weather-night, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: green
+      accent: amber
+      toggle: {icon: material/weather-sunny, name: Light mode}
+  icon:
+    logo: material/chip
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+  - gen-files:
+      scripts:
+        - docs/gen.py
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: null
+            show_source: false
+            show_root_heading: true
+            show_if_no_docstring: false
+            filters: ["!^_"]
+            members_order: source
+            heading_level: 2
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      base_path: [.]
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+not_in_nav: |
+  /api/**
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - tutorials/index.md
+      - Your first board: tutorials/first-board.md
+      - A mains-powered board: tutorials/mains-board.md
+  - How-to guides:
+      - how-to/index.md
+      - Install and check the tools: how-to/install.md
+      - Start WholeBoard: how-to/start.md
+      - Import a KiCad project: how-to/import-kicad.md
+      - Edit the board in KiCad: how-to/kicad-edits.md
+      - Exchange designs with Altium: how-to/altium.md
+      - Explore the simulation in the Sim Lab: how-to/sim-lab.md
+      - Design the enclosure: how-to/enclosure.md
+      - Fit a board to a case: how-to/case-fit.md
+      - Make a panel: how-to/panels.md
+      - Order the board: how-to/order.md
+      - Build and flash the firmware: how-to/firmware.md
+      - Use the checks from other agents (MCP): how-to/mcp.md
+      - Run the benchmark: how-to/benchmark.md
+      - Add your own building block: how-to/add-block.md
+  - Reference:
+      - reference/index.md
+      - Build steps: reference/steps.md
+      - Design spec: reference/spec.md
+      - Building blocks: reference/blocks.md
+      - Interface profiles: reference/profiles.md
+      - Mains requirements: reference/mains.md
+      - Checks: reference/checks.md
+      - JLCPCB limits: reference/jlc-limits.md
+      - The quote: reference/quote.md
+      - MCP tools: reference/mcp-tools.md
+      - Settings: reference/settings.md
+      - Command line: reference/cli.md
+      - Files and folders: reference/files.md
+      - Limits: reference/limits.md
+      - Python API: api/index.md
+  - Explanation:
+      - explanation/index.md
+      - How a build works: explanation/pipeline.md
+      - How rules reach the router and DRC: explanation/rules.md
+      - The two AI models: explanation/models.md
+      - Heat on the board and in the box: explanation/thermal.md
+      - Mains isolation: explanation/mains.md
+  - Standards and sources: standards.md
+  - Decisions:
+      - decisions/index.md
+      - decisions/0001-docs-generated-from-code.md
+      - decisions/0002-functional-spacing-between-declared-mains-nets.md
+      - decisions/0003-surface-rule-for-creepage.md
+      - decisions/0004-rules-beside-every-board.md
+      - decisions/0005-kikit-settings.md
+      - decisions/0006-price-tables-not-scraping.md
+      - decisions/0007-worker-and-expert.md
+  - Development: development.md
+  - Changelog: changelog.md

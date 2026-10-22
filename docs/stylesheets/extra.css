@@ -1,0 +1,2 @@
+/* The spec and module texts are prose with examples: wrap them rather than scroll sideways. */
+.md-typeset .language-text pre code { white-space: pre-wrap; }
