@@ -58,6 +58,11 @@ DEFAULTS: dict = {
         "shipping_method": "Global Standard Direct",
         "currency": "USD",
     },
+    "suppliers": {                  # optional: prices for parts JLCPCB cannot fit
+        "mouser_api_key": "",
+        "digikey_client_id": "",
+        "digikey_client_secret": "",
+    },
     "printing": {                   # for the enclosure's print cost estimate
         "material": "PLA",
         "price_per_kg": 25.0,       # filament, in your currency
@@ -114,7 +119,12 @@ def public(cfg: dict) -> dict:
     """The config with secrets masked, for sending to the browser."""
     out = json.loads(json.dumps(cfg))
     out.pop("server", None)
-    for key in ("anthropic_api_key", "openai_api_key"):
-        v = out["ai"].get(key) or ""
-        out["ai"][key] = ("•" * 8 + v[-4:]) if v else ""
+    for sect, key in SECRETS:
+        if sect in out:
+            v = out[sect].get(key) or ""
+            out[sect][key] = ("•" * 8 + v[-4:]) if v else ""
     return out
+
+
+SECRETS = (("ai", "anthropic_api_key"), ("ai", "openai_api_key"), ("suppliers", "mouser_api_key"),
+           ("suppliers", "digikey_client_secret"))

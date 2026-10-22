@@ -44,7 +44,29 @@ def test_board_and_schematic(tmp_path):
     assert board.add_ground_pour(Path(out["pcb"]), SPEC)
     sch = schematic.build(SPEC, tmp_path)
     text = Path(sch["sch"]).read_text()
-    assert text.count("(global_label") >= 20
+    assert text.count("(global_label") + text.count("(label") >= 20      # supply nets global, the rest local
+    assert sch["pages"][0]["title"] == "Main" and len(sch["pages"]) == 1
+
+
+@pytest.mark.skipif(not HAVE_LIBS, reason="KiCad libraries not installed")
+def test_schematic_sheets_and_signal_order(tmp_path):
+    spec = json.loads(json.dumps(SPEC))
+    reg = [c["ref"] for c in spec["components"] if schematic.stage(c) == 2]
+    assert reg, "the sample has a regulator"
+    for c in spec["components"]:
+        if c["ref"] in reg or (c["ref"].startswith("C") and c["ref"] in ("C1", "C2")):
+            c["sheet"] = "Power"
+    sch = schematic.build(spec, tmp_path)
+    assert [p["title"] for p in sch["pages"]] == ["Main", "Power"]
+    sub_ = (tmp_path / sch["pages"][1]["file"]).read_text()
+    root = Path(sch["sch"]).read_text()
+    assert "(sheet" in root and '"Sheetfile"' in root and "(sheet_instances" in root
+    assert "(global_label" in sub_ and "(sheet_instances" not in sub_
+    links = schematic.board_links(spec)
+    assert links[reg[0]][0].count("/") == 2 and links[reg[0]][1] == "/Power/"
+    assert links["J1"][1] == "/"
+    assert schematic.stage({"ref": "J1"}) < schematic.stage({"ref": "F1"}) < schematic.stage(
+        {"ref": "U1", "value": "AMS1117-3.3"}) < schematic.stage({"ref": "U2", "value": "ESP32"}) < schematic.stage({"ref": "D1"})
 
 
 @pytest.mark.skipif(not HAVE_LIBS, reason="KiCad libraries not installed")

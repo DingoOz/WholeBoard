@@ -9,7 +9,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from .. import blocks, config, design, impedance, pipeline, power, sim
+from .. import blocks, config, design, impedance, mains, pipeline, power, sim
 from ..jlc import parts as jparts
 from ..kicad import libs, schematic
 from ..project import Project
@@ -64,7 +64,9 @@ closes, vents for parts that get warm, and a label if the user wants one. Give d
 heights in part_heights for tall parts whose estimate looks wrong. Ask the user about real \
 choices (screwed or press-fit lid, wall mounting, label text) if they have not said. Then call \
 build_enclosure; FreeCAD builds it and reports collisions between parts and the box. Fix every \
-collision (bigger openings, more headroom, a different wall) and build again.
+collision (bigger openings, more headroom, a different wall) and build again. The result's \
+thermal section says how warm the air in the box gets from the simulated heat; if it warns, add \
+vents (or more headroom for side vents) and build again, or tell the user why not.
 5. Call finish with a short summary for the user: what the board does, key parts, board size \
 and layers, the quote total, the enclosure size and features, and anything they should check.
 
@@ -72,13 +74,19 @@ Good engineering rules
 - Add the support parts real circuits need: decoupling capacitors (100 nF per IC supply pin \
 plus bulk capacitance), pull-ups, ESD protection on external connectors where sensible, USB-C \
 CC pull-down resistors (5.1 kΩ) for sinks, reset/boot circuitry for MCUs, crystal load caps.
-- Single-sided SMT assembly on the top side. Prefer 0603 or 0402 passives (0603 is easiest).
+- Parts go on the top side by default. A part may go on the bottom with placement "side": "bottom" (it is \
+mirrored), and board.double_sided true lets TraceMaker move surface-mount parts to the bottom itself. Bottom-side \
+assembly costs a second setup at JLCPCB, so use it only when the board is too small otherwise or the user asks. \
+Prefer 0603 or 0402 passives (0603 is easiest).
 - Mark supply nets (GND, VBUS, +5V, +3V3 ...) with class "power" for wider tracks. Name the \
 ground net exactly GND so the ground pour connects to it.
 - Fix connectors, switches, LEDs the user will look at, and mounting holes with a placement \
 (x_mm, y_mm from the board's top-left corner, rotation in degrees, locked true). Put \
 connectors at the board edge with the courtyard inside the outline. Leave everything else \
 without placement: TraceMaker places it.
+- Changes the user makes in KiCad to a finished board are kept: parts they moved come back as placements with \
+"from": "kicad", and nets they routed by hand as "fixed_copper" that TraceMaker routes around. Leave both as they \
+are. Only if the user asks to start the layout afresh, submit the design with "keep_kicad_edits": false.
 - Size the board for the parts: about 2.5 times the total courtyard area for a 2-layer board, \
 unless the user gave a size. Use 4 layers for MCUs with many nets in a small area or for \
 high-speed signals, with planes {"In1.Cu": "GND", "In2.Cu": "<main supply>"}.
@@ -86,8 +94,13 @@ high-speed signals, with planes {"In1.Cu": "GND", "In2.Cu": "<main supply>"}.
 - Rate parts for what the simulation shows: resistor power (0603 = 100 mW), LED current, \
 regulator heat ((Vin - Vout) × current), capacitor voltage (with margin), switch current.
 - Set board "test_points": true to add probe pads on every supply rail for bring-up (or a list of nets).
+- Parts at 0.5 mm pitch or finer need fiducials for assembly: set board "fiducials": true (three in the corners),
+or order a panel with board "panel": {"nx": 2, "ny": 2}, which KiKit draws with 5 mm rails, tooling holes and
+fiducials, plus panel Gerbers, BOM and CPL (V-cut for square corners, mouse-bite tabs for rounded ones). The quote's
+panel suggestion tells you when a panel is cheaper.
 - High-speed or RF nets need controlled impedance: list them in "impedance" (USB D+/D- as a 90 ohm pair, \
-named like USB_DP/USB_DN; RF feeds 50 ohm single). The usb_c_data block adds its pair itself. On 2 layers \
+named like USB_DP/USB_DN; RF feeds 50 ohm single), with the interface's "profile" (usb2_hs, ethernet_100, rmii, \
+qspi_flash, rf_50) for its length, via and stub limits. Blocks add their own interfaces' entries. On 2 layers \
 impedance is impractical: fine for USB full speed, use 4 layers for USB high speed, Ethernet or RF.
 - If the board must fit an existing box, set board.case (below) and put mounting holes on its bosses with \
 board.mounting_holes.positions. If the user gave a DXF outline, use board.outline as given.
@@ -117,7 +130,9 @@ Design spec (the `spec` argument of submit_design)
 - "footprint" and "symbol" are KiCad library ids ("Library:Name") that the search tools return. \
 "symbol" is optional; without it the schematic shows a generated box.
 - Pins are "REF.PAD". Mounting holes from board.mounting_holes need no component entries.
-- "rules" is optional; the defaults suit JLCPCB's standard process.
+- "rules" is optional; the defaults suit JLCPCB's standard process. Each board also gets a .kicad_dru with \
+JLCPCB's limits for its layer count, so DRC checks annular rings, hole spacing and silkscreen too. Track \
+heating is checked with IPC-2152 (rules.trace_heating "ipc2221" for the older, stricter charts on inner layers).
 - "blocks": building blocks (format below); their parts and nets are added to "components" and "nets".
 - board.outline: [[x, y], ...] a polygon in mm for a non-rectangular board (width/height follow from it).
 - board.mounting_holes.positions: [[x, y], ...] hole centres, instead of one in each corner.
@@ -133,6 +148,9 @@ Building blocks
 Controlled impedance
 {IMP_DOC}
 
+Mains
+{MAINS_DOC}
+
 Common JLCPCB basic parts (checked October 2026; confirm stock with search_parts):
 0603 resistors 1% (Resistor_SMD:R_0603_1608Metric): 0R C21189, 100R C22775, 1k C21190,
 4.7k C23162, 5.1k C23186, 10k C25804, 100k C25803. 0402 10k C25744.
@@ -146,7 +164,7 @@ Others: AO3400A N-MOSFET C20917 (SOT-23), tactile switch TS-1187A C318884 (5.1x5
 Use find_passive for other resistor, capacitor and LED values.
 
 Keep messages to the user short and plain. Explain decisions briefly as you go.""".replace(
-    "{SIM_DOC}", sim.SIM_DOC).replace("{BLOCK_DOC}", blocks.doc()).replace("{IMP_DOC}", impedance.DOC).replace(
+    "{SIM_DOC}", sim.SIM_DOC).replace("{BLOCK_DOC}", blocks.doc()).replace("{IMP_DOC}", impedance.DOC).replace("{MAINS_DOC}", mains.DOC).replace(
     "{CASE_DOC}", __import__("wholeboard.case").case.__doc__.split("\n\n")[1].strip().replace("\n", "\n  "))
 
 
@@ -220,7 +238,7 @@ TOOLS = [
           "the current enclosure design if any, and the enclosure spec format.", {}, []),
     _tool("build_enclosure", "Build the enclosure in FreeCAD from an enclosure spec (format in "
           "enclosure_context). Returns sizes, openings, lid holes, collisions between parts and the box, "
-          "and notes. Takes a few seconds.",
+          "how warm the box gets inside (thermal), and notes. Takes a few seconds.",
           {"enclosure": {"type": "object", "description": "The complete enclosure spec."}}, ["enclosure"]),
     _tool("sim_lab_video", "When the user asks for a video or demo of the simulation: open the Sim Lab (the "
           "simulation drawn on the finished 3D board: current flow, LED glow, a heat map and every risk) in the "

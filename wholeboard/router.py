@@ -103,7 +103,9 @@ def _stream(cmd: list[str], log, cancel: threading.Event | None, timeout: float)
 
 
 def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "routable",
-          scratch: bool = True, seconds: float | None = None) -> dict:
+          scratch: bool = True, seconds: float | None = None, flip: bool = False,
+          keep_side: list[str] | None = None) -> dict:
+    """flip: surface-mount parts may go on the bottom side (keep_side: references that stay where they are)."""
     cfg = config.load()
     exe = find("tracemaker-place", cfg)
     if not exe:
@@ -112,6 +114,10 @@ def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "rout
     args = [str(pcb_in), "-o", str(pcb_out), "--mode", mode, "--time", str(t)]
     if scratch:
         args.append("--scratch")
+    if flip:
+        args.append("--flip")
+        if keep_side:
+            args += ["--keep-side", ",".join(keep_side)]
     _copy_project(pcb_in, pcb_out)
     # routable mode trial-routes each candidate placement; on some footprints (a module whose thermal vias sit under
     # its exposed pad) those trials never succeed and it overruns its time, so it gets a tighter limit and a fallback
@@ -190,11 +196,11 @@ def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | 
 
 
 def _copy_project(pcb_in: Path, pcb_out: Path) -> None:
-    """Keep the .kicad_pro (net classes, rules) beside every board copy."""
-    src = pcb_in.with_suffix(".kicad_pro")
-    dst = pcb_out.with_suffix(".kicad_pro")
-    if src.exists() and src != dst:
-        shutil.copyfile(src, dst)
+    """Keep the .kicad_pro (net classes, rules) and the .kicad_dru (custom rules) beside every board copy."""
+    for ext in (".kicad_pro", ".kicad_dru"):
+        src, dst = pcb_in.with_suffix(ext), pcb_out.with_suffix(ext)
+        if src.exists() and src != dst:
+            shutil.copyfile(src, dst)
 
 
 def viewer_available(cfg: dict | None = None) -> bool:

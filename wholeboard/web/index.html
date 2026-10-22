@@ -240,6 +240,14 @@
         <label>Ship to (country code) <input name="jlcpcb.shipping_country" maxlength="3"></label>
       </div>
       <p class="hint">Fab and assembly fees come from an editable price table (wholeboard/jlc/pricing.json). Part prices and stock are live from JLCPCB.</p>
+      <h3>Other suppliers</h3>
+      <p class="hint">Optional. For parts JLCPCB cannot fit (no LCSC number, missing or short of stock) the quote asks Mouser and DigiKey for stock and prices; without keys it links to their search pages. Mouser: a Search API key from mouser.com/api-hub. DigiKey: an app with the Product Information V4 API at developer.digikey.com.</p>
+      <div class="grid2">
+        <label>Mouser API key <input name="suppliers.mouser_api_key" autocomplete="off"></label>
+        <span></span>
+        <label>DigiKey client ID <input name="suppliers.digikey_client_id" autocomplete="off"></label>
+        <label>DigiKey client secret <input name="suppliers.digikey_client_secret" autocomplete="off"></label>
+      </div>
       <h3>3D printing the enclosure</h3>
       <div class="grid2">
         <label>Material <select name="printing.material"><option>PLA</option><option>PETG</option><option>ABS</option><option>ASA</option><option>TPU</option></select></label>

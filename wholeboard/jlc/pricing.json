@@ -28,12 +28,14 @@
     "economic": {
       "setup": 8.0, "stencil": 1.5, "per_smd_joint": 0.0017,
       "extended_part_fee": 3.0, "preferred_part_fee": 0.0,
-      "hand_solder_setup": 3.5, "per_tht_joint": 0.0173, "min_boards": 2
+      "hand_solder_setup": 3.5, "per_tht_joint": 0.0173, "min_boards": 2,
+      "both_sides": false
     },
     "standard": {
       "setup": 25.0, "stencil": 7.86, "per_smd_joint": 0.0016,
       "extended_part_fee": 3.0, "preferred_part_fee": 0.0,
-      "hand_solder_setup": 3.5, "per_tht_joint": 0.0173, "min_boards": 1
+      "hand_solder_setup": 3.5, "per_tht_joint": 0.0173, "min_boards": 1,
+      "both_sides": true, "second_side_setup": 25.0, "second_side_stencil": 7.86
     }
   },
   "shipping": {

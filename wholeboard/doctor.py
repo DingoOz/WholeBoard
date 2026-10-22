@@ -2,7 +2,7 @@
 
     python -m wholeboard.doctor                 # show what is installed and what is missing
     python -m wholeboard.doctor --install       # also install TraceMaker, FreeCAD, ngspice and KiCad libraries
-    python -m wholeboard.doctor --install tracemaker freecad ngspice libs platformio
+    python -m wholeboard.doctor --install tracemaker freecad ngspice libs platformio kikit
 
 The install.sh / install.ps1 scripts install the system packages (Python, KiCad, compilers) and then
 run this. Everything installed here goes under ~/.wholeboard/tools.
@@ -235,6 +235,10 @@ def check() -> list[tuple[str, bool, str, str]]:
                  "off" if m3 == "off" else (f"KiCad models in {dirs[0]}" if dirs else "downloaded when a board needs them")
                  + (f", {cached} cached" if cached else ""),
                  "Turn them on in Settings → KiCad & TraceMaker → 3D part models."))
+    from .kicad import panelize
+    kk = panelize.command()
+    rows.append(("KiKit", bool(kk), ("kikit · " + ("Docker image" if kk[0] == "docker" else kk[0])) if kk else
+                 "not found (optional: draws panels)", "python -m wholeboard.doctor --install kikit"))
     from . import fwbuild
     pio = fwbuild.find(cfg)
     pv = fwbuild.version(pio) if pio else None
@@ -253,7 +257,7 @@ def check() -> list[tuple[str, bool, str, str]]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m wholeboard.doctor", description=__doc__.split("\n")[0])
     ap.add_argument("--install", nargs="*", metavar="WHAT",
-                    help="install missing tools: tracemaker, freecad, ngspice, libs, platformio "
+                    help="install missing tools: tracemaker, freecad, ngspice, libs, platformio, kikit "
                          "(default: all but platformio)")
     ap.add_argument("--force", action="store_true", help="reinstall even if found")
     args = ap.parse_args(argv)
@@ -266,7 +270,8 @@ def main(argv: list[str] | None = None) -> int:
                 ("freecad", "FreeCAD", lambda log: bool(enclosure.fetch_freecad(log))),
                 ("ngspice", "ngspice", install_ngspice),
                 ("libs", "KiCad libraries", lambda log: libs.fetch_from_gitlab(log=log)),
-                ("platformio", "PlatformIO", lambda log: bool(__import__("wholeboard.fwbuild").fwbuild.install(log)))]
+                ("platformio", "PlatformIO", lambda log: bool(__import__("wholeboard.fwbuild").fwbuild.install(log))),
+                ("kikit", "KiKit", lambda log: __import__("wholeboard.kicad.panelize").kicad.panelize.install(log))]
         for key, label, fn in jobs:
             if key not in wanted:
                 continue
@@ -287,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {'✓' if ok else '✗'} {name.ljust(width)}  {detail}")
         if not ok:
             print(f"    {' ' * width}  fix: {fix}")
-    missing = [r[0] for r in rows if not r[1] and r[0] not in ("AI", "PlatformIO")]
+    missing = [r[0] for r in rows if not r[1] and r[0] not in ("AI", "PlatformIO", "KiKit")]
     if args.install is not None and failed:
         return 2
     return 1 if missing else 0

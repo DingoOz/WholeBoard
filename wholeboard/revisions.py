@@ -50,6 +50,9 @@ def record(p: Project, rev: int, result: dict, started: float) -> dict:
         "changes": brief(compare(prev, spec)) if prev else "first design",
         "by": result.get("by") or "",
     }
+    ke = result.get("kicad_edits")
+    if ke:
+        s["kicad_edits"] = {k: ke.get(k) for k in ("hand_placed", "held", "nets", "new")}
     (rdir / "summary.json").write_text(json.dumps(s, indent=1))
     return s
 

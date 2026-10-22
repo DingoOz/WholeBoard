@@ -1,0 +1,27 @@
+{
+  "_about": "JLCPCB's manufacturing limits, written into each board's .kicad_dru so KiCad's DRC checks them. Values are millimetres. Edit them when JLCPCB's capabilities page changes. 'cost' lists features JLCPCB makes but charges extra for; the quote adds them as lines.",
+  "last_checked": "2026-10-22",
+  "sources": [
+    "https://jlcpcb.com/capabilities/pcb-capabilities",
+    "https://jlcpcb.com/help/article/via-in-pad"
+  ],
+  "layers": {
+    "2": {"min_track": 0.127, "min_clearance": 0.127, "min_via_drill": 0.3, "min_via_diameter": 0.45,
+          "via_annular": 0.075, "pad_annular": 0.13, "min_pth_drill": 0.3},
+    "4": {"min_track": 0.09, "min_clearance": 0.09, "min_via_drill": 0.15, "min_via_diameter": 0.25,
+          "via_annular": 0.05, "pad_annular": 0.13, "min_pth_drill": 0.2},
+    "6": {"min_track": 0.09, "min_clearance": 0.09, "min_via_drill": 0.15, "min_via_diameter": 0.25,
+          "via_annular": 0.05, "pad_annular": 0.13, "min_pth_drill": 0.2}
+  },
+  "any": {
+    "hole_to_hole": 0.5, "via_to_via_hole": 0.254, "hole_to_copper": 0.254,
+    "silk_to_pad": 0.15, "min_text_height": 1.0, "min_text_thickness": 0.15,
+    "edge_clearance": 0.3, "max_aspect_ratio": 10
+  },
+  "cost": {
+    "small_via": {"below_drill_mm": 0.3, "layers": [4, 6], "fixed": 15.0, "per_m2": 0.0,
+                  "note": "Vias under 0.3 mm drill are an extra-cost option at JLCPCB."},
+    "via_in_pad": {"layers": {"4": 30.0, "6": 0.0},
+                   "note": "Vias in pads must be epoxy-filled and capped (POFV). JLCPCB includes it on 6-layer boards and charges for it on 4-layer boards; it is not offered on 1- and 2-layer boards."}
+  }
+}

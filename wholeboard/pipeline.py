@@ -10,9 +10,9 @@ import threading
 import time
 from pathlib import Path
 
-from . import bringup, case as stock_case, checks, config, design, enclosure, firmware, fwbuild, ibom, impedance, models3d, ngspice, power, revisions, router, sim, simlab
-from .jlc import fabs as jfabs, parts as jparts, quote as jquote, savings as jsavings
-from .kicad import board, cli, geometry, libs, schematic
+from . import boxheat, bringup, case as stock_case, checks, config, design, enclosure, firmware, fwbuild, ibom, impedance, mains, models3d, ngspice, power, revisions, router, sim, simlab
+from .jlc import fabs as jfabs, parts as jparts, quote as jquote, savings as jsavings, suppliers as jsuppliers
+from .kicad import board, cli, geometry, handedit, libs, panelize, schematic
 from .project import Project
 
 ROUTE_LOCK = threading.Lock()   # one routing job at a time (CPU heavy, one viewer port)
@@ -90,8 +90,41 @@ def _record(p: Project, res: dict, started: float) -> None:
         p.log("netlist", f"Could not save the revision summary: {e}")
 
 
+def _kicad_edits(p: Project, spec: dict) -> tuple[dict, dict | None]:
+    """Read back what the user changed in KiCad since the last build, and keep it in the new design."""
+    kept = p.state.get("kicad_edits")
+    if spec.get("keep_kicad_edits") is False:
+        if kept:
+            p.chat("system", "Let go of the edits kept from KiCad; the parts and tracks are placed and routed afresh.")
+        p.state.pop("kicad_edits", None)
+        return {k: v for k, v in spec.items() if k not in ("keep_kicad_edits", "fixed_copper")}, None
+    try:
+        found = handedit.detect(p.state.get("artifacts") or {})
+    except Exception as e:  # noqa: BLE001 - a board KiCad cannot read back is rebuilt as usual
+        p.log("netlist", f"Could not read the board back from KiCad: {e}")
+        found = None
+    if found:
+        kept = handedit.merge(kept, found)
+        p.state["kicad_edits"] = kept
+        prev = p.root / f"rev{p.state.get('revision', 0)}" / "summary.json"
+        try:
+            sm = json.loads(prev.read_text())
+            sm["edited_in_kicad"] = True
+            prev.write_text(json.dumps(sm, indent=1))
+        except (OSError, ValueError):
+            pass
+    spec, notes = handedit.apply(spec, kept)
+    if found or notes:
+        msg = handedit.describe(kept) or "Read the board back from KiCad"
+        if found and found["other"]:
+            notes.append("not read back: " + "; ".join(found["other"]))
+        p.chat("system", msg + "." + (" Note: " + "; ".join(notes) + "." if notes else ""))
+    return spec, ({**handedit.summary(kept), "notes": notes, "new": bool(found)} if kept else None)
+
+
 def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
     cfg = config.load()
+    spec, edits = _kicad_edits(p, spec)
     spec = design.normalise(spec)
     rev = int(p.state.get("revision", 0)) + 1
     p.state["revision"] = rev
@@ -102,6 +135,8 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
     (rdir / "design.json").write_text(json.dumps(spec, indent=1))
     name = spec["name"]
     result: dict = {"revision": rev}
+    if edits:
+        result["kicad_edits"] = edits
 
     for key in ("netlist", "schematic", "sim", "layout", "place", "route", "drc", "outputs", "quote", "review",
                 "enclosure"):
@@ -133,11 +168,17 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
         svg_dir = rdir / "schematic-svg"
         cli.run(["sch", "export", "svg", "--exclude-drawing-sheet", "-o", str(svg_dir), sch["sch"]],
                 cwd=rdir)
-        svgs = sorted(svg_dir.glob("*.svg"))
-        if svgs:
-            if sch.get("extent"):
-                schematic.crop_svg(svgs[0], sch["extent"])
-            p.visual("schematic", "svg", "Schematic", url=p.file_url(svgs[0]))
+        stem = Path(sch["sch"]).stem
+        pages = []
+        for pg in sch.get("pages") or [{"name": "", "title": "Main", "extent": sch.get("extent")}]:
+            f = svg_dir / (f"{stem}-{pg['name']}.svg" if pg["name"] else f"{stem}.svg")
+            if f.exists():
+                if pg.get("extent"):
+                    schematic.crop_svg(f, pg["extent"])
+                pages.append({"title": pg["title"], "url": p.file_url(f), "parts": pg.get("parts")})
+        if pages:
+            p.visual("schematic", "svg", "Schematic" + (f", {len(pages)} sheets" if len(pages) > 1 else ""),
+                     url=pages[0]["url"], pages=pages if len(pages) > 1 else None)
         erc = None
         try:
             erc = cli.erc(Path(sch["sch"]))
@@ -170,6 +211,8 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
     gen = rdir / f"{name}-1-generated.kicad_pcb"
     Path(built["pcb"]).replace(gen)
     shutil.copyfile(pro, gen.with_suffix(".kicad_pro"))
+    if pro.with_suffix(".kicad_dru").exists():      # TraceMaker routes to the custom rules too
+        shutil.copyfile(pro.with_suffix(".kicad_dru"), gen.with_suffix(".kicad_dru"))
     _board_visual(p, "layout", gen, "Footprints ready for placement")
     p.step("layout", "done", f"{spec['board']['width_mm']}×{spec['board']['height_mm']} mm, "
            f"{spec['board']['layers']} layers")
@@ -178,10 +221,12 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
     # ---- 4. placement
     placed = rdir / f"{name}-2-placed.kicad_pcb"
     movable = [c for c in spec["components"] if (c.get("placement") or {}).get("x_mm") is None]
-    p.step("place", "running", "TraceMaker is placing the parts")
+    both = bool(spec["board"].get("double_sided"))
+    p.step("place", "running", "TraceMaker is placing the parts" + (" on both sides" if both else ""))
     try:
         router.place(gen, placed, log=lambda s: p.log("place", s), cancel=p.cancel,
-                     mode="routable", scratch=True)
+                     mode="routable", scratch=True, flip=both,
+                     keep_side=[c["ref"] for c in spec["components"] if (c.get("placement") or {}).get("side")])
     except Exception as e:  # noqa: BLE001
         p.step("place", "error", str(e))
         return {**result, "ok": False, "stage": "placement", "errors": [str(e)]}
@@ -193,7 +238,17 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
         return {**result, "ok": False, "stage": "placement",
                 "errors": [f"These parts did not fit on the board: {', '.join(off)}. "
                            "Make the board bigger or use smaller parts."]}
-    p.step("place", "done", f"{len(movable)} parts placed")
+    bottom = [f["ref"] for f in geo["footprints"] if f.get("side") == "B.Cu"]
+    slots = []
+    if mains.config(spec):
+        slots = mains.add_slots(placed, spec, geo)
+        for s in slots:
+            p.log("place", f"Slot under {s['ref']}: " + (f"{s['length']:g} mm long" if s.get("fits") else
+                  f"no room for a slot between its pins ({s['gap_mm']:g} mm); use a part with wider pin spacing"))
+        if any(s.get("fits") for s in slots):
+            geo = _board_visual(p, "place", placed, "Placed parts, with isolation slots")
+    p.step("place", "done", f"{len(movable)} parts placed" + (f", {len(bottom)} on the bottom" if bottom else "")
+           + (f", {sum(1 for s in slots if s.get('fits'))} isolation slots" if slots else ""))
 
     # ---- 5. routing
     routed = rdir / f"{name}-3-routed.kicad_pcb"
@@ -266,6 +321,19 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
                 p.log("drc", w)
         except Exception as e:  # noqa: BLE001
             p.log("drc", f"Impedance check did not run: {e}")
+    if mains.config(spec):
+        try:
+            ms = mains.check(spec, geometry.read(final))
+        except Exception as e:  # noqa: BLE001
+            ms = {"problems": [f"The mains spacing check did not run: {e}"], "rows": []}
+        p.visual("drc", "mains", "Mains creepage and clearance", report=ms)
+        result["mains"] = {k: ms.get(k) for k in ("requirements", "problems")}
+        if ms["problems"]:
+            p.step("drc", "error", f"Mains safety: {len(ms['problems'])} spacing problems")
+            return {**result, "ok": False, "stage": "mains safety", "errors": ms["problems"],
+                    "hint": "A mains board is not finished until every spacing passes. Move the parts apart (set their "
+                            "placement), keep low-voltage parts and the ground pour away from the mains side, or "
+                            "use parts with wider pin spacing."}
     extra = f", {len(bc['problems']) + len(bc['warnings'])} board notes" if bc and (bc["problems"] or bc["warnings"]) else ""
     p.step("drc", "warn" if bc and bc["problems"] else "done", f"clean ({drc['warnings']} warnings{extra})")
     _check(p)
@@ -347,12 +415,16 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
                  note=(f"The CPL file turns {len(fixes)} part{'s' if len(fixes) != 1 else ''} to match JLCPCB's "
                        "library orientation (listed below). " if fixes else "") + "Check part rotations in JLCPCB's assembly preview before "
                  "ordering.")
-        p.state["artifacts"] = {"folder": str(rdir), "pcb": str(final), "files": files}
+        p.state["artifacts"] = {"folder": str(rdir), "pcb": str(final), "files": files,
+                                "pcb_sha": handedit.fingerprint(final)}
         p.save()
         p.step("outputs", "done", f"{len(fab['files'])} fab files, {len(images)} renders")
     except Exception as e:  # noqa: BLE001
         p.step("outputs", "error", str(e))
         return {**result, "ok": False, "stage": "outputs", "errors": [str(e)]}
+    pan = spec["board"].get("panel")
+    if isinstance(pan, dict) and pan.get("nx") and pan.get("ny"):
+        result["panel"] = run_panel(p, spec, int(pan["nx"]), int(pan["ny"]))
     _check(p)
 
     # ---- 8. quote
@@ -467,6 +539,7 @@ def run_enclosure(p: Project, spec: dict, enc: dict, pcb: Path | None = None) ->
     with p.lock:
         p.state["enclosure_spec"] = enc
         p.save()
+    s["thermal"] = _box_thermal(p, spec, geo, pcb, enc)
     labels = {"base_stl": "base.stl", "lid_stl": "lid.stl", "base_step": "base.step", "lid_step": "lid.step",
               "freecad": "FreeCAD model"}
     files = [{"name": Path(s["files"][k]).name, "label": v, "url": p.file_url(Path(s["files"][k]))}
@@ -478,6 +551,8 @@ def run_enclosure(p: Project, spec: dict, enc: dict, pcb: Path | None = None) ->
              preview=p.file_url(Path(s["preview"])), files=files)
     for n in s["notes"] + s["freecad_notes"]:
         p.log("enclosure", n)
+    for w in (s.get("thermal") or {}).get("warnings") or []:
+        p.log("enclosure", "Heat: " + w)
     o = s["outer_mm"]
     if s["collisions"]:
         p.step("enclosure", "warn", f"{len(s['collisions'])} collisions to fix")
@@ -487,8 +562,23 @@ def run_enclosure(p: Project, spec: dict, enc: dict, pcb: Path | None = None) ->
                + (f", ~{pr['hours']:.1f} h to print" if pr else ""))
     return {k: s[k] for k in ("ok", "collisions", "outer_mm", "inner_mm", "board_standoff_mm",
                               "board_top_to_lid_mm", "tallest_part", "board_fixing", "lid", "openings",
-                              "lid_holes", "extras", "notes", "freecad_notes", "warnings", "filament_g", "print")
+                              "lid_holes", "extras", "notes", "freecad_notes", "warnings", "filament_g", "print",
+                              "thermal")
             if k in s}
+
+
+def _box_thermal(p: Project, spec: dict, geo: dict, pcb: Path, enc: dict | None) -> dict | None:
+    """How warm the board runs in its box, from the board's simulation."""
+    res_file = pcb.parent / "sim" / "results.json"
+    if not res_file.exists():
+        return None
+    try:
+        res = json.loads(res_file.read_text())
+        box = boxheat.geometry(spec, geo, enc, config.load())
+        return simlab.box_report(spec, res, box) if box and res.get("ran") else None
+    except Exception as e:  # noqa: BLE001 - the enclosure is fine without its heat report
+        p.log("enclosure", f"No heat estimate for the box: {e}")
+        return None
 
 
 def make_report(p: Project) -> Path | None:
@@ -512,11 +602,15 @@ def run_case(p: Project, spec: dict, pcb: Path | None = None) -> dict:
         return {"ok": False, "problems": ["There is no finished board yet."]}
     p.step("enclosure", "running", f"Fitting the board into the {spec['board']['case'].get('name') or 'case'}")
     try:
-        r = stock_case.build(spec, geometry.read(pcb), pcb.parent / "case", spec["name"],
+        geo = geometry.read(pcb)
+        r = stock_case.build(spec, geo, pcb.parent / "case", spec["name"],
                              (p.state.get("enclosure_spec") or {}).get("part_heights"))
     except Exception as e:  # noqa: BLE001
         p.step("enclosure", "error", str(e)[:200])
         return {"ok": False, "problems": [str(e)]}
+    r["thermal"] = _box_thermal(p, spec, geo, pcb, p.state.get("enclosure_spec"))
+    for w in (r["thermal"] or {}).get("warnings") or []:
+        p.log("enclosure", "Heat: " + w)
     files = [{"name": f["path"].name, "label": f["title"], "url": p.file_url(f["path"])} for f in r["files"]]
     p.visual("enclosure", "case", f"Fitting into a {r['case']['name']}", result={k: v for k, v in r.items()
              if k not in ("files", "page")}, files=files, page=p.file_url(r["page"]))
@@ -526,14 +620,14 @@ def run_case(p: Project, spec: dict, pcb: Path | None = None) -> dict:
     p.step("enclosure", "error" if r["problems"] else ("warn" if r["warnings"] else "done"),
            f"{len(r['problems'])} problems fitting the case" if r["problems"] else
            f"Fits, {r['headroom_mm']:g} mm headroom, {n} opening{'s' if n != 1 else ''} to drill")
-    return {k: r[k] for k in ("ok", "case", "problems", "warnings", "cutouts", "headroom_mm")}
+    return {k: r[k] for k in ("ok", "case", "problems", "warnings", "cutouts", "headroom_mm", "thermal")}
 
 
 def run_quote(p: Project, spec: dict, opts: dict | None = None) -> dict:
     opts = {**config.load()["jlcpcb"], **(opts or {})}
     p.step("quote", "running", "Pricing at JLCPCB")
     try:
-        q = jquote.full_quote(spec, opts, log=lambda s: p.log("quote", s))
+        q = jquote.full_quote(spec, opts, log=lambda s: p.log("quote", s), geo=_final_geo(p))
     except Exception as e:  # noqa: BLE001
         p.step("quote", "error", str(e))
         return {"error": str(e)}
@@ -542,6 +636,11 @@ def run_quote(p: Project, spec: dict, opts: dict | None = None) -> dict:
             q["savings"] = jsavings.find(q, spec, log=lambda s: p.log("quote", s))
         except Exception as e:  # noqa: BLE001
             p.log("quote", f"Cheaper-part search failed: {e}")
+    if q.get("components"):
+        try:
+            q["suppliers"] = jsuppliers.prices(spec, q, config.load(), log=lambda s: p.log("quote", s))
+        except Exception as e:  # noqa: BLE001
+            p.log("quote", f"Mouser and DigiKey not checked: {e}")
     try:
         q["fabs"] = jfabs.compare(design.normalise(spec), q)
     except Exception as e:  # noqa: BLE001
@@ -567,14 +666,80 @@ def run_quote(p: Project, spec: dict, opts: dict | None = None) -> dict:
             "components": (q.get("components") or {}).get("subtotal"),
             "shipping": q["shipping"]["subtotal"],
             "part_problems": [{"refs": l["refs"], "lcsc": l["lcsc"], "status": l["status"]} for l in short],
+            "fab_cost_features": [{k: f.get(k) for k in ("item", "amount", "note")} for f in q.get("fab_features") or []],
             "extended_parts": [l["lcsc"] for l in (q.get("components") or {}).get("lines", [])
                                if l.get("library_type") == "extended"],
             "panel_suggestion": ({k: (q.get("panel_options") or {}).get("recommended", {}).get(k)
                                   for k in ("nx", "ny", "method", "boards", "pcb_cost")}
                                  | {"reason": q["panel_options"].get("reason")}
                                  if (q.get("panel_options") or {}).get("recommended") else None),
+            "elsewhere": [{"refs": r["refs"], "mpn": r["mpn"], "why": r["why"],
+                           "best": ({k: r["offers"][0].get(k) for k in ("supplier", "sku", "stock", "unit", "total")}
+                                    if r["offers"] else None)} for r in (q.get("suppliers") or {}).get("parts") or []],
             "cheaper_parts": [{"refs": x["refs"], "use_lcsc": x["to"]["lcsc"], "mpn": x["to"]["mpn"],
                                "saving": x["saving"], "reason": x["reason"]} for x in sv.get("suggestions") or []]}
+
+
+def run_panel(p: Project, spec: dict, nx: int, ny: int) -> dict:
+    """Draw the panel with KiKit and export its Gerbers, CPL and BOM, from the last finished board."""
+    art = p.state.get("artifacts") or {}
+    pcb = Path(art["pcb"]) if art.get("pcb") else None
+    if not pcb or not pcb.exists():
+        return {"ok": False, "errors": ["Build the board first; the panel is made from the finished board."]}
+    if not panelize.available():
+        return {"ok": False, "errors": ["KiKit is not installed: run python -m wholeboard.doctor --install kikit"]}
+    spec = design.normalise(spec)
+    b, name = spec["board"], spec["name"]
+    vcut = float(b.get("corner_radius_mm") or 0) <= 0.3 and not b.get("outline")
+    pdir = pcb.parent / "panel"
+    if pdir.exists():
+        shutil.rmtree(pdir)
+    p.step("outputs", "running", f"KiKit is drawing a {nx} × {ny} panel")
+    try:
+        ppcb = panelize.make(pcb, pdir / f"{name}-panel.kicad_pcb", nx, ny, vcut, log=lambda s: p.log("outputs", s))
+        fab = cli.export_fab(ppcb, pdir / "fab", int(b["layers"]), (panelize.VCUT_LAYER,) if vcut else ())
+        n = nx * ny
+        rows = [{**r, "refs": [x for ref in r["refs"] for x in panelize.copies(ref, n)]} for r in jquote.bom_rows(spec)]
+        bom = jquote.write_bom(rows, pdir / "fab" / f"{name}-panel-bom.csv")
+        files = [{"name": Path(fab["gerber_zip"]).name, "url": p.file_url(Path(fab["gerber_zip"]))},
+                 {"name": bom.name, "url": p.file_url(bom)}]
+        if fab.get("pos"):
+            fitted = {x for r in rows for x in r["refs"] if r.get("lcsc")}
+            import csv
+            with open(fab["pos"], newline="") as fh:
+                excl = {row["Ref"] for row in csv.DictReader(fh) if row.get("Ref") not in fitted}
+            overrides = {x: c["cpl"] for c in spec["components"] if isinstance(c.get("cpl"), dict)
+                         for x in panelize.copies(c["ref"], n)}
+            cpl, _ = cli.jlc_cpl(Path(fab["pos"]), pdir / "fab" / f"{name}-panel-cpl.csv", excl, overrides)
+            files.append({"name": cpl.name, "url": p.file_url(cpl)})
+        geo = geometry.read(ppcb)
+        gj = pdir / f"{name}-panel.geo.json"
+        gj.write_text(json.dumps(geo))
+        bb = geo.get("bbox") or [0, 0, 0, 0]
+        info = {"nx": nx, "ny": ny, "method": "V-cut" if vcut else "tabs with mouse bites", "rail_mm": panelize.RAIL_MM,
+                "width_mm": round(bb[2] - bb[0], 2), "height_mm": round(bb[3] - bb[1], 2), "boards": n}
+        p.visual("outputs", "panel", f"Panel, {nx} × {ny}", url=p.file_url(gj), files=files, panel=info,
+                 note=f"{info['width_mm']} × {info['height_mm']} mm, {info['method']}, {panelize.RAIL_MM:g} mm rails with "
+                      "three tooling holes and three fiducials. In JLCPCB's order form choose 'Panel by Customer' and "
+                      + ("say the V-cut lines are on the Cmts.User layer, " if vcut else "")
+                      + f"enter {nx} × {ny} boards; upload the panel BOM and CPL for assembly.")
+        p.state["panel"] = info
+        p.save()
+        p.step("outputs", "done", f"Panel {nx} × {ny}: {info['width_mm']} × {info['height_mm']} mm")
+        return {"ok": True, **info, "files": [f["name"] for f in files]}
+    except Exception as e:  # noqa: BLE001
+        p.step("outputs", "warn", f"Panel not made: {e}")
+        return {"ok": False, "errors": [str(e)]}
+
+
+def _final_geo(p: Project) -> dict | None:
+    """The finished board's copper, as the board view reads it."""
+    pcb = Path((p.state.get("artifacts") or {}).get("pcb") or "")
+    f = pcb.parent / f"{pcb.stem}.geo.json"
+    try:
+        return json.loads(f.read_text()) if f.is_file() else (geometry.read(pcb) if pcb.is_file() else None)
+    except (OSError, ValueError):
+        return None
 
 
 def build_firmware(p: Project) -> dict:
@@ -660,19 +825,41 @@ def _simlab_inputs(p: Project) -> tuple[dict, dict, dict, Path, dict | None]:
     return spec, geo, res, rdir, checks_
 
 
+def _box(p: Project, spec: dict, geo: dict) -> dict | None:
+    """The enclosure around the board: the printed one, the stock case, or the one WholeBoard would suggest."""
+    try:
+        return boxheat.geometry(design.normalise(spec), geo, p.state.get("enclosure_spec"), config.load())
+    except Exception as e:  # noqa: BLE001 - the Sim Lab works without a box
+        p.log("sim", f"No enclosure for the Sim Lab: {e}")
+        return None
+
+
 def simlab_scene(p: Project) -> dict:
-    spec, geo, res, _, checks_ = _simlab_inputs(p)
-    return simlab.scene(spec, geo, res, checks_)
+    spec, geo, res, rdir, checks_ = _simlab_inputs(p)
+    box = _box(p, spec, geo)
+    dyn = None
+    if box and simlab.box_settings(box, {})["box"]:
+        # the board has a real enclosure: start with it in the box
+        try:
+            dyn = _whatif(p, spec, res, rdir, checks_, box, {})
+        except ValueError:
+            pass
+    return simlab.scene(spec, geo, res, checks_, box, dyn)
 
 
-def simlab_whatif(p: Project, values: dict) -> dict:
-    spec, _, res, rdir, checks_ = _simlab_inputs(p)
+def _whatif(p: Project, spec, res, rdir, checks_, box, values) -> dict:
     cfg = config.load()
     engine = ngspice.find(cfg)
     if engine is None:
         raise ValueError("ngspice is not installed")
     with p.simlab_lock:     # one what-if at a time per project; they share a folder
-        return simlab.whatif(spec, res, values, rdir / "sim-whatif", checks_, cfg=cfg, engine=engine, log=lambda m: None)
+        return simlab.whatif(spec, res, values, rdir / "sim-whatif", checks_, box, cfg=cfg, engine=engine,
+                             log=lambda m: None)
+
+
+def simlab_whatif(p: Project, values: dict) -> dict:
+    spec, geo, res, rdir, checks_ = _simlab_inputs(p)
+    return _whatif(p, spec, res, rdir, checks_, _box(p, spec, geo), values)
 
 
 def save_simlab_video(p: Project, data: bytes, kind: str) -> dict:

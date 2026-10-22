@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .. import design
-from ..kicad import libs
+from ..kicad import dru, libs
 from . import panel, parts as jparts
 
 PRICING_FILE = Path(__file__).with_name("pricing.json")
@@ -57,7 +57,7 @@ def bom_rows(spec: dict) -> list[dict]:
     spec = design.normalise(spec)
     groups: dict[tuple, dict] = {}
     for c in spec["components"]:
-        if c.get("dnp") or str(c.get("footprint", "")).startswith(("MountingHole", "TestPoint")):
+        if c.get("dnp") or str(c.get("footprint", "")).startswith(("MountingHole", "TestPoint", "Fiducial")):
             continue
         fp = libs.load_footprint(c["footprint"])
         smd_pads = tht_pads = 0
@@ -85,9 +85,9 @@ def write_bom(rows: list[dict], out: Path) -> Path:
     return out
 
 
-def full_quote(spec: dict, opts: dict, log=lambda *_: None) -> dict:
+def full_quote(spec: dict, opts: dict, log=lambda *_: None, geo: dict | None = None) -> dict:
     """opts: quantity, assembly, assembly_quantity, pcba_type, surface_finish, solder_mask,
-    shipping_method, thickness_mm."""
+    shipping_method, thickness_mm. geo (the routed board) adds the features JLCPCB charges extra for."""
     P = pricing()
     spec = design.normalise(spec)
     b = spec["board"]
@@ -116,8 +116,15 @@ def full_quote(spec: dict, opts: dict, log=lambda *_: None) -> dict:
         pcb_lines, pcb_total = pcb_price(w, h, layers, qty, opts, P)
         board_qty = qty
         ship_area = w * h * qty
+    features = dru.cost_features(geo, layers) if geo else []
+    for f in features:
+        if f.get("amount"):
+            pcb_lines.append(_line(f["item"], f["amount"], f["note"]))
+            pcb_total += f["amount"]
+        elif f.get("problem"):
+            assumptions.append(f"{f['item']}: {f['note']}")
     result: dict = {
-        "currency": "USD", "board": {"width_mm": w, "height_mm": h, "layers": layers},
+        "currency": "USD", "fab_features": features, "board": {"width_mm": w, "height_mm": h, "layers": layers},
         "quantity": board_qty, "pcb": {"lines": pcb_lines, "subtotal": round(pcb_total, 2)},
         "panel": lay,
         "panel_options": panel.options(spec, opts, lambda pw, ph, n: pcb_price(pw, ph, layers, n, opts, P)[1]),
@@ -125,9 +132,20 @@ def full_quote(spec: dict, opts: dict, log=lambda *_: None) -> dict:
 
     rows = bom_rows(spec)
     asm_total = comp_total = 0.0
+    # parts on the bottom: where the placer put them, or where the spec says
+    if geo and geo.get("footprints"):
+        bottom = {f["ref"] for f in geo["footprints"] if f.get("side") == "B.Cu"}
+    else:
+        bottom = {c["ref"] for c in spec["components"] if design.on_bottom(c)}
+    bottom_smd = sorted(r for row in rows if row["lcsc"] and row["smd_joints"] for r in row["refs"] if r in bottom)
     if opts.get("assembly", True) and rows:
         kind = opts.get("pcba_type", "economic")
         A = P["assembly"].get(kind, P["assembly"]["economic"])
+        if bottom_smd and not A.get("both_sides"):
+            kind = next((k for k, v in P["assembly"].items() if v.get("both_sides")), kind)
+            A = P["assembly"][kind]
+            assumptions.append(f"{', '.join(bottom_smd[:6])} {'are' if len(bottom_smd) > 1 else 'is'} on the bottom side; "
+                               f"JLCPCB assembles both sides only with {kind} assembly, so the quote uses it.")
         n = max(int(opts.get("assembly_quantity", 2)), A["min_boards"])
         n = min(n, board_qty)
         log(f"Pricing {len(rows)} BOM lines at JLCPCB ...")
@@ -172,11 +190,15 @@ def full_quote(spec: dict, opts: dict, log=lambda *_: None) -> dict:
         if n_pref and A["preferred_part_fee"]:
             asm_lines.append(_line(f"Preferred part loading: {n_pref} part types",
                                    n_pref * A["preferred_part_fee"]))
+        if bottom_smd:
+            asm_lines.append(_line(f"Bottom-side assembly: {len(bottom_smd)} part{'s' if len(bottom_smd) != 1 else ''}",
+                                   A.get("second_side_setup", A["setup"]) + A.get("second_side_stencil", A["stencil"]),
+                                   "a second setup and stencil"))
         if tht_j:
             asm_lines.append(_line(f"Through-hole hand soldering: {tht_j} joints × {n} boards",
                                    A["hand_solder_setup"] + tht_j * n * A["per_tht_joint"]))
         asm_total = sum(l["amount"] for l in asm_lines)
-        result["assembly"] = {"boards": n, "type": kind, "lines": asm_lines,
+        result["assembly"] = {"boards": n, "type": kind, "lines": asm_lines, "bottom_parts": bottom_smd,
                               "subtotal": round(asm_total, 2)}
         result["components"] = {"lines": comp_lines, "subtotal": round(comp_total, 2)}
         if any(l["status"] != "ok" for l in comp_lines):

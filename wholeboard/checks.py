@@ -1,7 +1,8 @@
 """Physical checks on the routed board: trace heating, voltage drop and decoupling placement.
 
-- Trace current: IPC-2221 gives each track's temperature rise at the current its net carries
-  (from the simulation, or the supply's rating when there is no simulation).
+- Trace current: each track's temperature rise at the current its net carries (from the simulation, or the
+  supply's rating when there is no simulation). IPC-2152 by default; IPC-2221's older charts on request
+  (rules.trace_heating), and both are reported for comparison.
 - Voltage drop: the copper resistance of a power net's tracks between its farthest pads.
 - Decoupling: every IC supply pin should have a small capacitor on the same net close by.
 """
@@ -18,19 +19,41 @@ CU_THICK_MM = {"outer": 0.035, "inner": 0.0175}   # 1 oz outer, 0.5 oz inner (JL
 MIL = 0.0254              # mm
 
 
-def trace_rise_c(current_a: float, width_mm: float, thick_mm: float, inner: bool) -> float:
-    """IPC-2221 temperature rise (°C) of a track carrying current_a."""
+METHODS = ("ipc2152", "ipc2221")
+
+
+def _area_2152(current_a: float, rise_c: float) -> float:
+    """Cross-section (mil²) that carries current_a with rise_c of heating: a fit to IPC-2152's baseline chart.
+
+    The baseline is a track alone in a 1.6 mm board with no copper plane nearby, so it is on the safe side for
+    boards with pours or planes. IPC-2152 measured inner and outer tracks heating about the same."""
+    return (117.555 * rise_c ** -0.913 + 1.15) * current_a ** (0.84 * rise_c ** -0.108 + 1.159)
+
+
+def trace_rise_c(current_a: float, width_mm: float, thick_mm: float, inner: bool, method: str = "ipc2152") -> float:
+    """Temperature rise (°C) of a track carrying current_a, by IPC-2152 or IPC-2221."""
     if current_a <= 0 or width_mm <= 0:
         return 0.0
-    k = 0.024 if inner else 0.048
     area_mil2 = (width_mm / MIL) * (thick_mm / MIL)
-    return (current_a / (k * area_mil2 ** 0.725)) ** (1 / 0.44)
+    if method == "ipc2221":
+        k = 0.024 if inner else 0.048
+        return (current_a / (k * area_mil2 ** 0.725)) ** (1 / 0.44)
+    lo, hi = 1e-3, 1e4            # the fit's area grows as the rise falls: find the rise whose area is this one
+    if _area_2152(current_a, hi) > area_mil2:
+        return hi
+    for _ in range(80):
+        mid = math.sqrt(lo * hi)
+        lo, hi = (mid, hi) if _area_2152(current_a, mid) > area_mil2 else (lo, mid)
+    return hi
 
 
-def width_for(current_a: float, rise_c: float, thick_mm: float, inner: bool) -> float:
-    """Track width (mm) that carries current_a with rise_c of heating (IPC-2221)."""
-    k = 0.024 if inner else 0.048
-    area_mil2 = (current_a / (k * rise_c ** 0.44)) ** (1 / 0.725)
+def width_for(current_a: float, rise_c: float, thick_mm: float, inner: bool, method: str = "ipc2152") -> float:
+    """Track width (mm) that carries current_a with rise_c of heating."""
+    if method == "ipc2221":
+        k = 0.024 if inner else 0.048
+        area_mil2 = (current_a / (k * rise_c ** 0.44)) ** (1 / 0.725)
+    else:
+        area_mil2 = _area_2152(current_a, rise_c)
     return area_mil2 / (thick_mm / MIL) * MIL
 
 
@@ -89,6 +112,8 @@ def _graph_drop(tracks: list[dict], pads: list[dict], current_a: float) -> tuple
 def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: list[dict] | None = None,
         max_rise_c: float = 10.0) -> dict:
     spec = design.normalise(spec)
+    method = spec["rules"].get("trace_heating") if spec["rules"].get("trace_heating") in METHODS else "ipc2152"
+    other = next(m for m in METHODS if m != method)
     net_class = {n["name"]: n.get("class") for n in spec["nets"]}
     currents = dict(net_current_ma or {})
     source = "simulation" if currents else "estimate"
@@ -119,15 +144,16 @@ def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: lis
         narrow = min(tracks, key=lambda t: t["w"])
         inner = narrow["layer"].startswith("In")
         thick = CU_THICK_MM["inner" if inner else "outer"]
-        rise = trace_rise_c(i_a, narrow["w"], thick, inner)
+        rise = trace_rise_c(i_a, narrow["w"], thick, inner, method)
         r_ohm, length = _graph_drop(tracks, pads_by_net.get(net, []), i_a)
         drop = r_ohm * i_a
         row = {"net": net, "current_ma": round(i_ma, 1), "narrowest_mm": narrow["w"], "layer": narrow["layer"],
-               "rise_c": round(rise, 2), "copper_mohm": round(r_ohm * 1000, 1), "drop_mv": round(drop * 1000, 1),
+               "rise_c": round(rise, 2), f"rise_{other}_c": round(trace_rise_c(i_a, narrow["w"], thick, inner, other), 2),
+               "copper_mohm": round(r_ohm * 1000, 1), "drop_mv": round(drop * 1000, 1),
                "length_mm": round(length, 1)}
         poured = net == pour or net in planes
         if i_a > 0 and rise > max_rise_c and not poured:
-            need = width_for(i_a, max_rise_c, thick, inner)
+            need = width_for(i_a, max_rise_c, thick, inner, method)
             msg = (f"{net}: {i_ma:.0f} mA heats its {narrow['w']:g} mm track by about {rise:.0f} °C; "
                    f"make power tracks at least {need:.2f} mm (rules.power_track_mm)")
             (problems if rise > 3 * max_rise_c else warnings).append(msg)
@@ -182,5 +208,5 @@ def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: lis
                                 f"{best[1]:.1f} mm away; keep it within {limit:g} mm (give it a placement next to "
                                 f"{c['ref']})")
     rows.sort(key=lambda r: -r["current_ma"])
-    return {"source": source, "tracks": rows, "decoupling": decoupling, "problems": problems,
+    return {"source": source, "method": method, "tracks": rows, "decoupling": decoupling, "problems": problems,
             "warnings": warnings, "ok": not problems}

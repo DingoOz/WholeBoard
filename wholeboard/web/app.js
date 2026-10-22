@@ -303,7 +303,7 @@ function renderStage() {
   stage.innerHTML = "";
   const key = S.selStep;
   const vis = S.visuals[key] || {};
-  const order = ["import", "viewer", "board", "svg", "erc", "sim", "power", "netlist", "drc", "checks", "impedance", "images", "files", "report", "bringup", "firmware", "review", "case", "enclosure", "quote"];
+  const order = ["import", "viewer", "board", "svg", "erc", "sim", "power", "netlist", "drc", "checks", "impedance", "images", "files", "panel", "report", "bringup", "firmware", "review", "case", "enclosure", "quote"];
   const kinds = Object.keys(vis).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   if (key === "sim" && vis.sim?.result?.ran && S.visuals.outputs?.files) kinds.unshift("simlab");
   if (key === "route" && !S.liveViewer) { const i = kinds.indexOf("viewer"); if (i >= 0) kinds.splice(i, 1); }
@@ -349,7 +349,21 @@ const RENDER = {
     const img = el("img", { src: v.url, alt: v.title });
     box.append(img);
     zoomable(box, img);
-    return card(v.title, box, { fill: true, right: el("a", { href: v.url, target: "_blank" }, "open SVG") });
+    const open = el("a", { href: v.url, target: "_blank" }, "open SVG");
+    if (!v.pages?.length) return card(v.title, box, { fill: true, right: open });
+    // a hierarchical schematic: one tab per sheet
+    const tabs = el("div", { class: "sheet-tabs", role: "tablist" });
+    const show = (pg, b) => {
+      img.src = pg.url; open.href = pg.url;
+      tabs.querySelectorAll("button").forEach(x => x.setAttribute("aria-selected", x === b ? "true" : "false"));
+    };
+    v.pages.forEach((pg, i) => {
+      const b = el("button", { type: "button", role: "tab", "aria-selected": i === 0 ? "true" : "false",
+        title: `${pg.parts ?? "?"} parts` }, pg.title);
+      b.onclick = () => show(pg, b);
+      tabs.append(b);
+    });
+    return card(v.title, el("div", { class: "sheet-wrap" }, tabs, box), { fill: true, right: open });
   },
   netlist(v) {
     const body = el("div");
@@ -380,6 +394,13 @@ const RENDER = {
     return card(v.title, el("div", {}, el("div", { class: "gallery" }, v.images.map(i => el("figure", {}, el("a", { href: i.url, target: "_blank" }, el("img", { src: i.url, alt: i.view })), el("figcaption", {}, i.view)))),
       v.note ? el("p", { class: "muted" }, v.note) : ""));
   },
+  panel(v) {
+    const host = el("div");
+    fetch(v.url).then(r => r.json()).then(geo => new BoardView(host, geo, {}));
+    return card(v.title, el("div", {}, el("div", { class: "panel-view" }, host),
+      el("div", { class: "files" }, v.files.map(f => el("a", { class: "btn", href: f.url, download: f.name }, "⬇ " + f.name))),
+      el("p", { class: "muted" }, v.note || "")));
+  },
   files(v) {
     const body = el("div", {}, el("div", { class: "files" }, v.files.map(f => el("a", { class: "btn", href: f.url, download: f.name }, "⬇ " + f.name))),
       el("p", { class: "muted" }, v.note || ""), el("p", { class: "pins" }, v.folder || ""));
@@ -394,14 +415,36 @@ const RENDER = {
     const r = v.report, body = el("div");
     if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(x => el("li", {}, x))));
     for (const g of r.groups) {
-      body.append(el("h5", {}, el("span", {}, `${g.nets.join(" / ")}: ${g.ohms} Ω ${g.kind === "diff" ? "differential pair" : "single-ended"}`),
-        el("span", { class: "muted" }, g.stackup)),
-        el("p", { class: "muted" }, g.practical ? `Target ${g.width_mm} mm wide` + (g.gap_mm ? `, ${g.gap_mm} mm apart` : "") +
+      const bus = g.kind === "bus";
+      const limits = [g.max_length_mm != null && `under ${g.max_length_mm} mm long`, g.max_vias != null && `at most ${g.max_vias} vias`,
+        g.max_stub_mm != null && `stubs under ${g.max_stub_mm} mm`, g.max_match_mm != null && `matched within ${g.max_match_mm} mm`].filter(Boolean);
+      body.append(el("h5", {}, el("span", {}, `${g.nets.join(" / ")}: ` + (bus ? "length-matched bus" : `${g.ohms} Ω ${g.kind === "diff" ? "differential pair" : "single-ended"}`)),
+        el("span", { class: "muted" }, g.profile_title || g.stackup)),
+        bus ? "" : el("p", { class: "muted" }, g.practical ? `Target ${g.width_mm} mm wide` + (g.gap_mm ? `, ${g.gap_mm} mm apart` : "") +
           ` (≈${g.achieved} Ω over ${g.h_mm} mm of dielectric, εr ${g.er})` : g.note || ""),
-        table(["Net", "Length", "Narrowest", "Vias"], g.members.map(m => [el("b", {}, m.net), `${m.length_mm} mm`, m.width_mm != null ? `${m.width_mm} mm` : "–", m.vias])),
-        g.skew_mm != null ? el("p", {}, `Length difference ${g.skew_mm} mm (limit ${g.max_skew_mm} mm)`) : "");
+        limits.length ? el("p", { class: "muted" }, "Limits: " + limits.join(", ")) : "",
+        table(["Net", "Length", "Narrowest", "Vias", "Longest stub"], g.members.map(m => [el("b", {}, m.net), `${m.length_mm} mm`,
+          m.width_mm != null ? `${m.width_mm} mm` : "–", m.vias, m.stub_mm ? `${m.stub_mm} mm` : "–"])),
+        g.skew_mm != null ? el("p", {}, `Length difference ${g.skew_mm} mm (limit ${g.max_skew_mm} mm)`) : "",
+        g.match_mm != null ? el("p", {}, `Longest minus shortest ${g.match_mm} mm` + (g.max_match_mm != null ? ` (limit ${g.max_match_mm} mm)` : "")) : "");
     }
     if (r.order_note) body.append(el("p", {}, el("b", {}, r.order_note)));
+    return card(v.title, body);
+  },
+  mains(v) {
+    const r = v.report, q = r.requirements || {}, body = el("div");
+    if (q.working_v) body.append(el("p", {}, `${q.working_v} V working (${q.peak_v} V peak, ${q.impulse_v} V transients). ` +
+      `Mains nets to other mains-side nets: ${q.functional_outer_mm} mm (inner layers ${q.functional_inner_mm} mm). ` +
+      (r.config?.isolated ? `Mains side to low voltage: ${q.clearance_mm} mm clearance and ${q.creepage_mm} mm creepage (reinforced).` :
+        "Not isolated: the whole board is live.")));
+    if (r.barrier?.length) body.append(el("p", { class: "muted" }, "Isolation barrier: " + r.barrier.map(b => b.ref).join(", ") +
+      (r.slots ? `; ${r.slots} milled slot${r.slots > 1 ? "s" : ""}` : "")));
+    if (r.problems.length) body.append(el("ul", { class: "list-err" }, r.problems.map(x => el("li", {}, x))));
+    else body.append(el("p", {}, el("b", {}, "Every spacing passes.")));
+    if (r.rows?.length) body.append(el("details", {}, el("summary", {}, `Closest approaches (${r.rows.length})`),
+      table(["", "From", "To", "Clearance", "Creepage"], r.rows.map(x => [x.ok ? "✓" : "✗", x.a, x.b,
+        `${x.clearance_mm} / ${x.need_mm} mm`, x.need_creepage_mm != null ? `${x.creepage_mm} / ${x.need_creepage_mm} mm` : "–"]))));
+    if (r.note) body.append(el("p", { class: "muted" }, r.note));
     return card(v.title, body);
   },
   bringup(v) {
@@ -427,6 +470,7 @@ const RENDER = {
     if (r.cutouts.length) body.append(table(["Face", "Part", "Hole", "Position (from the face's bottom-left)"], r.cutouts.map(k =>
       [k.face, k.ref, k.shape === "circle" ? `⌀${k.d} mm` : `${k.w} × ${k.h} mm`, k.shape === "circle" ? `centre ${k.u}, ${k.v} mm` : `corner ${k.u}, ${k.v} mm`])));
     body.append(el("div", { class: "files" }, v.files.map(f => el("a", { class: "btn", href: f.url, target: "_blank" }, f.label))));
+    if (r.thermal) body.append(boxThermal(r.thermal));
     return card(v.title, body, { right: el("a", { href: v.page, target: "_blank" }, "Print the templates ↗") });
   },
   firmware(v) {
@@ -463,9 +507,13 @@ const RENDER = {
     const r = v.report, body = el("div");
     if (r.problems.length) body.append(el("ul", { class: "list-err" }, r.problems.map(x => el("li", {}, x))));
     if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(x => el("li", {}, x))));
-    if (r.tracks.length) body.append(el("h5", {}, `Track current (${r.source === "simulation" ? "from the simulation" : "estimated"})`),
-      table(["Net", "Current", "Narrowest", "Heating", "Copper", "Drop"], r.tracks.map(t => [el("b", {}, t.net), `${t.current_ma} mA`,
-        `${t.narrowest_mm} mm ${t.layer}`, `+${t.rise_c} °C`, `${t.copper_mohm} mΩ`, `${t.drop_mv} mV`])));
+    if (r.tracks.length) {
+      const m = r.method === "ipc2221" ? ["IPC-2221", "ipc2152", "IPC-2152"] : ["IPC-2152", "ipc2221", "IPC-2221"];
+      body.append(el("h5", {}, `Track current (${r.source === "simulation" ? "from the simulation" : "estimated"})`),
+        table(["Net", "Current", "Narrowest", `Heating (${m[0]})`, m[2], "Copper", "Drop"], r.tracks.map(t => [el("b", {}, t.net), `${t.current_ma} mA`,
+          `${t.narrowest_mm} mm ${t.layer}`, `+${t.rise_c} °C`, t[`rise_${m[1]}_c`] != null ? `+${t[`rise_${m[1]}_c`]} °C` : "–",
+          `${t.copper_mohm} mΩ`, `${t.drop_mv} mV`])));
+    }
     if (r.decoupling.length) body.append(el("h5", {}, "Decoupling capacitors"),
       table(["IC pin", "Net", "Nearest cap", "Distance"], r.decoupling.map(d => [`${d.ref}.${d.pad} ${d.pin !== d.pad ? d.pin : ""}`, d.net,
         d.cap || "none", d.distance_mm != null ? `${d.distance_mm} mm` : "–"])));
@@ -601,21 +649,36 @@ function renderSimLab() {
 function buildSimLab(scene, st, host, side, tourBtn, recBtn) {
   const lab = new SimLab(host, scene, { onSelect: ref => { selRisk = null; selPart = ref; drawSide(); } });
   if (!lab.gl) return;
-  let dyn = st.dyn || scene, selRisk = null, selPart = null, timer = null, busy = 0, touring = false;
+  let dyn = st.dyn || scene, selRisk = null, selPart = null, timer = null, busy = 0, touring = false, redraw = false;
   const params = Object.fromEntries(scene.params.map(p => [p.id, p]));
   const value = id => st.values[id] ?? params[id].value;
   const status = el("p", { class: "simlab-status muted" }, "Click a risk or a part to see what changes it.");
   const toggles = el("div", { class: "simlab-toggles" });
-  for (const [k, label] of [["flow", "Current flow"], ["heat", "Heat map"], ["glow", "LED glow"], ["labels", "Labels"]]) {
-    const b = el("button", { type: "button", class: "chip toggle" + (lab.show[k] ? " on" : "") }, label);
-    b.onclick = () => { lab.show[k] = !lab.show[k]; b.classList.toggle("on", lab.show[k]); lab.texDirty = true; };
+  const chips = {};
+  const syncChips = () => { for (const [k, b] of Object.entries(chips)) b.classList.toggle("on", !!lab.show[k]); };
+  for (const [k, label] of [["flow", "Current flow"], ["heat", "Heat map"], ["glow", "LED glow"], ["labels", "Labels"], ["box", "Enclosure"]]) {
+    if (k === "box" && !scene.box) continue;
+    const b = chips[k] = el("button", { type: "button", class: "chip toggle" + (lab.show[k] ? " on" : "") }, label);
+    b.onclick = () => { lab.show[k] = !lab.show[k]; syncChips(); lab.texDirty = true; };
     toggles.append(b);
   }
   toggles.append(el("button", { type: "button", class: "chip", onclick: () => { lab.focusRefs = []; lab.sel = null; selRisk = selPart = null; lab.home(); drawSide(); } }, "Reset view"));
   if (st.dyn) lab.update(st.dyn);
   for (const id of ["airflow", "copper", "ambient"]) if (st.values[id] != null) lab.setLocal(id, st.values[id]);
 
+  const choice = p => {
+    const sel = el("select", {}, p.options.map(([v, label]) => el("option", { value: v }, label)));
+    sel.value = value(p.id);
+    sel.onchange = () => {
+      st.values[p.id] = p.id === "box" ? +sel.value : sel.value;
+      if (p.id === "box") { lab.show.box = !!+sel.value; if (lab.show.box) { lab.show.heat = true; lab.show.flow = false; } syncChips(); }
+      redraw = true;      // the enclosure's controls and note change with it
+      resim();
+    };
+    return el("label", { class: "simlab-slider simlab-choice" + (value(p.id) !== p.value ? " changed" : "") }, el("span", {}, p.label), sel);
+  };
   const slider = p => {
+    if (p.kind === "choice") return choice(p);
     const log = !!p.log, toPos = v => log ? Math.log(v / p.min) / Math.log(p.max / p.min) * 1000 : v;
     const fromPos = x => log ? p.min * (p.max / p.min) ** (x / 1000) : +x;
     const out = el("b", {}, slValue(p, value(p.id)));
@@ -639,10 +702,10 @@ function buildSimLab(scene, st, host, side, tourBtn, recBtn) {
       try {
         const d = await api(`/api/projects/${S.pid}/simlab/whatif`, { method: "POST", body: { values } });
         if (mine !== busy) return;
-        dyn = st.dyn = d; lab.update(d);
+        dyn = st.dyn = d; lab.update(d); syncChips();
         const probs = d.risks.filter(r => r.level === "problem").length;
         status.textContent = `Re-simulated in ${((performance.now() - t0) / 1000).toFixed(1)} s: ` + (probs ? `${probs} problem${probs > 1 ? "s" : ""}` : "no problems") + ".";
-        drawRisks();
+        if (redraw) { redraw = false; drawSide(); } else { drawRisks(); if (boxNote) boxNote.textContent = boxNoteText(); }
       } catch (e) { status.textContent = "Simulation failed: " + e.message; }
     }, 350);
   };
@@ -656,11 +719,20 @@ function buildSimLab(scene, st, host, side, tourBtn, recBtn) {
         selRisk = r.text; selPart = null; lab.sel = null;
         lab.focusRefs = r.refs;
         if (/°C|heat|hot|dissipat/i.test(r.text)) { lab.show.heat = true; lab.show.flow = false; }
+        if (r.source === "Enclosure" && dyn.box_heat?.on) { lab.show.box = true; syncChips(); }
         r.refs.length ? lab.focus(r.refs) : lab.home();
         drawSide();
       };
       riskList.append(li);
     }
+  };
+  let boxNote = null;
+  const boxNoteText = () => {
+    const bx = dyn.box_heat;
+    if (!bx) return "";
+    return bx.on ? `Inside air ${bx.air_c.toFixed(1)} °C. With the cooler walls round it the board sees ${bx.board_env_c.toFixed(1)} °C, and the circuit is simulated at that.`
+      + (scene.box.kind === "suggested" ? " No enclosure is designed yet, so this is the box WholeBoard would suggest." : "")
+      : `In ${scene.box.name} the air inside would reach ${bx.air_c.toFixed(0)} °C.`;
   };
   const drawAdjust = () => {
     adjust.innerHTML = "";
@@ -668,15 +740,22 @@ function buildSimLab(scene, st, host, side, tourBtn, recBtn) {
     const r = selRisk && dyn.risks.find(x => x.text === selRisk);
     if (r) { ids = r.params; title = "What changes this"; }
     else if (selPart) { ids = (dyn.links || scene.links || {})[selPart] || []; title = `${selPart}: ` + lab.describe(selPart).slice(1).join(" · "); }
-    const board = ["ambient", "airflow", "copper", ...scene.params.filter(p => p.id.startsWith("src:")).map(p => p.id)];
-    ids = ids.filter(id => params[id]);
+    const boxOn = !!dyn.box_heat?.on, boxIds = ["box", "vents", "material", "placement"];
+    // inside the box the board's cooling comes from the box, not the cooling slider
+    const board = ["ambient", ...(boxOn ? [] : ["airflow"]), "copper", ...scene.params.filter(p => p.id.startsWith("src:")).map(p => p.id)];
+    ids = ids.filter(id => params[id] && !(boxOn && id === "airflow") && !(!boxOn && boxIds.slice(1).includes(id)));
     if (title) adjust.append(el("h5", {}, title), ids.length ? el("div", {}, ids.map(id => slider(params[id])))
       : el("p", { class: "muted" }, "No slider changes this part directly; try the supply and air below."));
-    adjust.append(el("h5", {}, "Board and air"), el("div", {}, board.filter(id => !ids.includes(id) && params[id]).map(id => slider(params[id]))));
-    const others = scene.params.filter(p => !board.includes(p.id) && !ids.includes(p.id));
+    if (scene.box) {
+      const shown = (boxOn ? boxIds : ["box"]).filter(id => !ids.includes(id));
+      boxNote = el("p", { class: "muted simlab-note" }, boxNoteText());
+      if (shown.length) adjust.append(el("h5", {}, "Enclosure"), el("div", {}, shown.map(id => slider(params[id]))), boxNote);
+    }
+    adjust.append(el("h5", {}, boxOn ? "Board and room" : "Board and air"), el("div", {}, board.filter(id => !ids.includes(id) && params[id]).map(id => slider(params[id]))));
+    const others = scene.params.filter(p => !board.includes(p.id) && !ids.includes(p.id) && !boxIds.includes(p.id) && p.id !== "airflow");
     if (others.length) adjust.append(el("details", {}, el("summary", {}, `Every part value (${others.length})`), others.map(slider)));
     if (Object.keys(st.values).length) adjust.append(el("button", { class: "btn", type: "button", onclick: () => {
-      st.values = {}; st.dyn = null; dyn = scene; lab.update(scene);
+      st.values = {}; st.dyn = null; dyn = scene; lab.update(scene); syncChips();
       for (const id of ["airflow", "copper", "ambient"]) lab.setLocal(id, params[id].value);
       status.textContent = "Back to the design's own values."; drawSide();
     } }, "Reset all values"));
@@ -804,10 +883,11 @@ function renderStock(q) {
 
 function renderFabs(q) {
   if (!q.fabs?.length) return "";
-  return el("details", {}, el("summary", {}, "Bare boards at other fabs"),
-    table(["Fab", "Boards", "Price", "Shipping", "Lead time", "Notes"], q.fabs.map(x => [el("a", { href: x.url, target: "_blank" }, x.fab), x.boards ?? "–",
-      x.total != null ? money(x.total) + (x.kind === "indicative" ? " (indicative)" : "") : "quote online", x.shipping || "–", x.lead_time || "–",
-      el("span", { class: "muted" }, (x.basis ? x.basis + ". " : "") + (x.notes || ""))])));
+  return el("details", {}, el("summary", {}, "Other fabs and assemblers"),
+    table(["Fab", "Boards", "Price", "Assembly", "Shipping", "Lead time", "Notes"], q.fabs.map(x => [el("a", { href: x.url, target: "_blank" }, x.fab), x.boards ?? "–",
+      x.total != null ? money(x.total) + (x.kind === "indicative" ? " (indicative)" : "") : (x.kind === "quote" ? "–" : "quote online"),
+      x.assembly_total != null ? money(x.assembly_total) : (x.kind === "quote" ? "quote online" : "–"), x.shipping || "–", x.lead_time || "–",
+      el("span", { class: "muted" }, (x.basis ? x.basis + ". " : "") + (x.assembly_basis ? "Assembly: " + x.assembly_basis + ". " : "") + (x.notes || ""))])));
 }
 
 function renderQuote(v) {
@@ -826,6 +906,20 @@ function renderQuote(v) {
           el("td", {}, l.library_type ? el("span", { class: "tag " + l.library_type }, l.library_type) : "", l.status !== "ok" ? el("span", { class: "tag bad" }, l.status) : ""),
           el("td", { class: "num" }, l.stock?.toLocaleString?.() ?? "–"), el("td", { class: "num" }, l.order_qty),
           el("td", { class: "num" }, l.unit != null ? "$" + l.unit.toFixed(4) : "–"), el("td", { class: "num" }, money(l.total)))))));
+  }
+  const su = q.suppliers;
+  if (su?.parts?.length) {
+    left.append(el("h5", {}, el("span", {}, "Parts JLCPCB cannot fit"), el("span", {}, su.total != null ? money(su.total) : "")),
+      table(["Refs", "Part", "Why", "Best offer", "Stock", "Unit", "Total"], su.parts.map(r => {
+        const o = r.offers?.[0];
+        const look = r.links ? el("span", { class: "muted" }, " ", el("a", { href: r.links.mouser, target: "_blank" }, "Mouser"), " · ",
+          el("a", { href: r.links.digikey, target: "_blank" }, "DigiKey")) : "";
+        return [r.refs.join(", "), el("span", {}, r.mpn || r.value || "–", look), r.why,
+          o ? el("a", { href: o.url || "#", target: "_blank" }, `${o.supplier} ${o.sku || ""}`) : (r.errors?.[0] || (su.keys ? "not found" : "add API keys in Settings")),
+          o ? o.stock.toLocaleString() : "–", o?.unit != null ? "$" + o.unit.toFixed(4) : "–", o ? money(o.total) : "–"];
+      })),
+      el("p", { class: "muted" }, "Order these and fit them by hand, or send them to JLCPCB as consigned parts. " +
+        (su.keys ? "Prices from the suppliers' APIs." : "Add Mouser or DigiKey API keys in Settings to see live prices.")));
   }
   const sv = q.savings;
   if (sv?.suggestions?.length) {
@@ -855,6 +949,19 @@ function renderQuote(v) {
         table(["Layout", "Panel size", "Separation", "Panels", "Boards", "PCB cost", "Per board"],
           [[`single boards`, "", "", "", po.single.boards, money(po.single.pcb_cost), "$" + po.single.per_board.toFixed(3)],
            ...po.layouts.map(l => [`${l.nx} × ${l.ny}`, `${l.width_mm} × ${l.height_mm} mm`, l.method, l.panels, l.boards, money(l.pcb_cost), "$" + l.per_board.toFixed(3)])])));
+  }
+  const want = q.panel || po?.recommended;
+  if (want) {
+    const pb = el("button", { class: "btn", type: "button" }, `Make the ${want.nx} × ${want.ny} panel files`);
+    pb.onclick = async () => {
+      pb.disabled = true; pb.textContent = "KiKit is drawing the panel…";
+      try {
+        const r = await api(`/api/projects/${S.pid}/panel`, { method: "POST", body: { nx: want.nx, ny: want.ny } });
+        if (r.ok) selectStep("outputs", true); else alert(r.errors.join("\n"));
+      } finally { pb.disabled = false; pb.textContent = `Make the ${want.nx} × ${want.ny} panel files`; }
+    };
+    left.append(el("div", { class: "row-actions" }, pb, el("span", { class: "muted" },
+      " Rails, tooling holes, fiducials, panel Gerbers, BOM and CPL, drawn with KiKit. Shown under Outputs.")));
   }
   left.append(...sec("Shipping", q.shipping));
   left.append(el("div", { class: "quote-total" }, el("span", {}, "Total"), el("span", {}, money(q.total))),
@@ -933,6 +1040,7 @@ function renderEnclosure(v) {
       + (s.print.machine_cost ? `, machine ${money(s.print.machine_cost)}` : "") + ")" : null))));
   const notes = [...(s.notes || []), ...(s.freecad_notes || []), ...(s.warnings || [])];
   if (notes.length) info.append(el("ul", { class: "assume" }, notes.map(n => el("li", {}, n))));
+  if (s.thermal) info.append(boxThermal(s.thermal));
   info.append(el("p", { class: "muted" }, "Print the base open side up and the lid flat side down, without supports. ",
     "PLA or PETG at 0.2 mm layers works well. Check the openings against your parts' datasheets before printing."));
   const side = el("div", { class: "quote-form" }, el("b", {}, "Change the enclosure"),
@@ -941,6 +1049,21 @@ function renderEnclosure(v) {
     el("p", { class: "muted" }, "The FreeCAD model and macro open in FreeCAD for hand editing."));
   frag.append(card("Enclosure details", el("div", { class: "quote-grid" }, info, side)));
   return frag;
+}
+
+// how warm the board runs in its box (from boxheat, via the enclosure step)
+function boxThermal(t) {
+  const c = x => `${(+x).toFixed(0)} °C`;
+  const box = el("div", { class: "box-heat" + (t.warnings.length ? " warm" : "") },
+    el("h5", {}, "Heat in the box"),
+    el("p", {}, `With the board's ${n3(t.power_mw)} mW inside, the air in the box settles at `, el("b", {}, c(t.air_c)),
+      ` in a ${c(t.room_c)} room (${t.rise_k.toFixed(0)} °C warmer). The lid sits at ${c(t.surface_c.lid)}, the walls at ${c(t.surface_c.sides)}. `
+      + `Vents: ${t.vents}; ${t.through_openings_pct}% of the heat leaves through openings, the rest through the ${t.material} walls.`
+      + (t.with_vents_c < t.air_c - 1 ? ` Lid and side vents would bring the inside to ${c(t.with_vents_c)}.` : "")),
+    t.parts.length ? table(["Part", "In the box", "Limit"], t.parts.slice(0, 4).map(x => [x.ref, c(x.temp_c), c(x.limit_c)])) : "",
+    t.warnings.length ? el("ul", { class: "list-warn" }, t.warnings.map(w => el("li", {}, w))) : "",
+    el("button", { class: "btn", type: "button", onclick: () => { S.follow = false; selectStep("sim", true); } }, "See it in the Sim Lab"));
+  return box;
 }
 
 async function openHistory() {
@@ -972,6 +1095,9 @@ async function openHistory() {
       r.image_url ? el("img", { src: r.image_url, alt: "" }) : el("div", { class: "rev-noimg" }, "no render"),
       el("div", { class: "rev-main" },
         el("div", {}, el("b", {}, `Revision ${r.revision}`), r.current ? el("span", { class: "tag" }, "current") : "", status,
+          r.edited_in_kicad ? el("span", { class: "tag warn", title: "Changed by hand in KiCad after it was built; the next revision kept the changes" }, "edited in KiCad") : "",
+          r.kicad_edits ? el("span", { class: "tag", title: `Hand-placed: ${r.kicad_edits.hand_placed.join(", ") || "none"}. Hand-routed nets: ${r.kicad_edits.nets.join(", ") || "none"}.` },
+            `keeps KiCad edits (${r.kicad_edits.hand_placed.length} parts, ${r.kicad_edits.nets.length} nets)`) : "",
           el("span", { class: "muted" }, " " + new Date(r.time * 1000).toLocaleString() + (r.by ? ` · ${r.by}` : ""))),
         el("div", { class: "muted" }, `${b.width_mm ?? "?"} × ${b.height_mm ?? "?"} mm, ${b.layers ?? "?"} layers, ${r.parts} parts, ${r.nets} nets` + (r.total != null ? ` · ${money(r.total)}` : "")),
         r.changes ? el("div", {}, r.changes) : "",

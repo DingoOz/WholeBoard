@@ -118,14 +118,14 @@ def render(pcb: Path, out: Path, view: str = "top", width: int = 1400, height: i
     return out
 
 
-def export_fab(pcb: Path, out_dir: Path, layers: int) -> dict:
+def export_fab(pcb: Path, out_dir: Path, layers: int, extra_layers: tuple[str, ...] = ()) -> dict:
     """Gerbers + drill files (zipped for JLCPCB) and the raw placement file."""
     gerb = out_dir / "gerbers"
     if gerb.exists():
         shutil.rmtree(gerb)
     gerb.mkdir(parents=True)
     cu = ["F.Cu", *[f"In{i}.Cu" for i in range(1, max(0, layers - 2) + 1)], "B.Cu"]
-    lay = ",".join(cu + ["F.Paste", "B.Paste", "F.SilkS", "B.SilkS", "F.Mask", "B.Mask", "Edge.Cuts"])
+    lay = ",".join(cu + ["F.Paste", "B.Paste", "F.SilkS", "B.SilkS", "F.Mask", "B.Mask", "Edge.Cuts", *extra_layers])
     r = run(["pcb", "export", "gerbers", "-l", lay, "--subtract-soldermask", "--no-x2",
              "-o", str(gerb) + os.sep, str(pcb)], cwd=pcb.parent)
     if not any(gerb.iterdir()):

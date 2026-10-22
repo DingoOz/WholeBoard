@@ -6,6 +6,10 @@ and the parameters a user can change with sliders. `whatif` re-simulates the des
 (a resistor value, a supply voltage, an IC's load current, the ambient temperature) and returns the new numbers.
 The thermal map itself is solved in the browser (web/simlab.js) from the heat each part gives off, so the
 airflow and copper sliders respond instantly.
+
+With an enclosure (the printed one, the user's stock case, or the box WholeBoard would suggest), the board can
+be put in it: boxheat works out the air temperature inside, the circuit is re-simulated in that air, and the
+heat map uses the weaker cooling inside a box.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ import math
 import re
 from pathlib import Path
 
-from . import design, enclosure, power, sim
+from . import boxheat, design, enclosure, power, sim
 
 LED_COLORS = {"red": [255, 50, 35], "green": [40, 235, 90], "blue": [50, 110, 255], "white": [255, 245, 230],
               "yellow": [255, 210, 40], "amber": [255, 160, 20], "orange": [255, 120, 20], "pink": [255, 90, 170],
@@ -24,6 +28,7 @@ LED_COLORS = {"red": [255, 50, 35], "green": [40, 235, 90], "blue": [50, 110, 25
 VF_GUESS = {"red": 2.0, "yellow": 2.1, "amber": 2.1, "orange": 2.1, "green": 3.0, "blue": 3.0, "white": 3.0}
 REF_RE = re.compile(r"\b([A-Z]{1,4}\d{1,4})\b")
 AIRFLOW = [(8, "still air, inside a closed box"), (12, "still air"), (25, "gentle airflow"), (60, "a fan")]
+BOX_KEYS = ("box", "vents", "material", "placement")
 
 
 def _is_led(c: dict) -> bool:
@@ -215,10 +220,43 @@ def _ohms(v: float) -> str:
     return f"{v:.3g}R"
 
 
-def params(spec: dict, res: dict) -> list[dict]:
+def box_params(box: dict | None) -> list[dict]:
+    """The enclosure's controls: in or out of the box, vents, wall material and where it stands."""
+    if not box:
+        return []
+    dv = box["designed_vents"]
+    design_vents = ("lid and side slots" if dv["lid"] and dv["sides"] else "lid slots" if dv["lid"]
+                    else "side slots" if dv["sides"] else "none")
+    return [{"id": "box", "label": "Enclosure", "kind": "choice", "value": int(box["kind"] != "suggested"),
+             "options": [[0, "Open air"], [1, "In " + box["name"]]]},
+            {"id": "vents", "label": "Vents", "kind": "choice", "value": "design",
+             "options": [["design", f"As designed ({design_vents})"]] +
+                        [[v, boxheat.VENT_NAMES[v].capitalize()] for v in boxheat.VENTS[1:]]},
+            {"id": "material", "label": "Walls", "kind": "choice", "value": box["material"],
+             "options": [[m, m if m.startswith("alu") else m + " plastic"] for m in boxheat.MATERIALS]},
+            {"id": "placement", "label": "Standing", "kind": "choice", "value": "raised" if box.get("feet") else "desk",
+             "options": [[k, v.capitalize()] for k, v in boxheat.PLACEMENTS.items()]}]
+
+
+def box_settings(box: dict | None, values: dict | None) -> dict:
+    """The enclosure controls' values, defaults filled in."""
+    ps = box_params(box)
+    vals = {p["id"]: p["value"] for p in ps}
+    for p in ps:        # a value the control does not offer keeps its default
+        v = (values or {}).get(p["id"])
+        if p["id"] != "box" and v in [o[0] for o in p["options"]]:
+            vals[p["id"]] = v
+    if (values or {}).get("box") is not None:
+        vals["box"] = float(values["box"])
+    vals["box"] = bool(box) and bool(vals.get("box"))
+    return vals
+
+
+def params(spec: dict, res: dict, box: dict | None = None, room_c: float | None = None) -> list[dict]:
     """Every slider the Sim Lab offers. `local` ones only change the thermal map in the browser."""
-    out = [{"id": "ambient", "label": "Ambient temperature", "unit": "°C", "min": -20, "max": 85, "step": 1,
-            "value": float(res.get("ambient_c") or (spec.get("simulation") or {}).get("ambient_c") or 25)},
+    room = room_c if room_c is not None else res.get("ambient_c") or (spec.get("simulation") or {}).get("ambient_c") or 25
+    out = box_params(box) + [{"id": "ambient", "label": "Room temperature" if box else "Ambient temperature", "unit": "°C",
+            "min": -20, "max": 85, "step": 1, "value": float(room)},
            {"id": "airflow", "label": "Cooling", "unit": "W/m²K", "min": 6, "max": 60, "step": 1, "value": 12,
             "local": True, "marks": AIRFLOW},
            {"id": "copper", "label": "Copper weight", "unit": "oz", "min": 0.5, "max": 2, "step": 0.5, "value": 1,
@@ -251,6 +289,8 @@ def apply(spec: dict, res: dict, values: dict) -> dict:
     comps = {c["ref"]: c for c in spec["components"]}
     simsec = spec.setdefault("simulation", {})
     for pid, val in (values or {}).items():
+        if pid in BOX_KEYS:
+            continue
         val = float(val)
         if pid == "ambient":
             simsec["ambient_c"] = val
@@ -358,23 +398,92 @@ def _series_resistors(spec: dict) -> dict[str, list[str]]:
 
 
 # ------------------------------------------------------------------------------------ scene
-def dynamic(spec: dict, res: dict, checks: dict | None) -> dict:
-    """The parts of the scene a re-simulation changes."""
+def dynamic(spec: dict, res: dict, checks: dict | None, box: dict | None = None, boxset: dict | None = None,
+            room_c: float | None = None) -> dict:
+    """The parts of the scene a re-simulation changes. With the board in its box, `res` was simulated in the
+    box's inside air and `room_c` is the room around the box."""
     budget = power.budget(spec, res) if res.get("ran") else None
-    plist = params(spec, res)
+    plist = params(spec, res, box, room_c)
     rows = res.get("net_current_ma") or {}
     pstate = part_state(spec, res)
     ids = {p["id"] for p in plist}
     links = {r: [x for x in [f"r:{r}", f"load:{r}"] + [f"r:{s}" for s in series] if x in ids]
              for r, series in _series_resistors(spec).items()}
+    rk = risks(spec, res, budget, checks, plist, pstate)
+    heat = None
+    if box:
+        bs = box_settings(box, boxset)
+        room = float(room_c if room_c is not None else res.get("ambient_c") or 25)
+        heat = {**boxheat.solve(box, boxheat.total_power_w(pstate), room, bs["vents"], bs["material"],
+                                bs["placement"]), "on": bs["box"]}
+        rk = sorted(rk + box_risks(box, heat), key=lambda r: ["problem", "warning", "watch"].index(r["level"]))
     return {"ran": bool(res.get("ran")), "state": pstate, "params": plist, "links": {k: v for k, v in links.items() if v},
-            "risks": risks(spec, res, budget, checks, plist, pstate),
+            "risks": rk, "box_heat": heat,
             "supplies": [s for s in res.get("supplies") or [] if s["kind"] != "signal"],
             "net_ma": rows, "ambient_c": float(res.get("ambient_c") or 25),
             "problems": res.get("problems") or [], "warnings": res.get("warnings") or []}
 
 
-def scene(spec: dict, geo: dict, res: dict, checks: dict | None = None) -> dict:
+BOX_PARAMS = ["box", "vents", "material", "placement", "ambient"]
+
+
+def box_risks(box: dict, heat: dict) -> list[dict]:
+    """What the box does to the board, tied to the enclosure controls."""
+    out = []
+
+    def add(level, text):
+        out.append({"id": f"box{len(out) + 1}", "level": level, "source": "Enclosure", "text": text, "refs": [],
+                    "nets": [], "params": BOX_PARAMS})
+    air, rise, lid = heat["air_c"], heat["rise_k"], heat["surface_c"]["lid"]
+    if not heat["on"]:
+        add("watch", f"In {box['name']} the air inside would reach {air:.0f} °C, {rise:.0f} °C above the room. "
+                     f"Put the board in the box to see what that does to it")
+        return out
+    where = f"Inside {box['name']} ({heat['vents_label']})"
+    level = "problem" if air > 70 else "warning" if air > 50 or rise > 20 else "watch"
+    add(level, f"{where} the air reaches {air:.0f} °C, {rise:.0f} °C above the {heat['room_c']:.0f} °C room; "
+               f"{heat['through_openings_w'] / max(heat['power_w'], 1e-9) * 100:.0f}% of the heat leaves through openings")
+    if lid > 60:
+        add("problem", f"The lid reaches {lid:.0f} °C, too hot to touch for long")
+    elif lid > 45:
+        add("warning", f"The lid reaches {lid:.0f} °C, warm to the touch")
+    for n in heat.get("notes") or []:
+        add("watch", n)
+    return out
+
+
+def box_report(spec: dict, res: dict, box: dict) -> dict:
+    """The box's heat for the enclosure step: inside air, surfaces, the hottest parts, and what vents would do."""
+    spec = design.normalise(spec)
+    pw = boxheat.total_power_w(part_state(spec, res))
+    room = float(res.get("ambient_c") or 25)
+    h = boxheat.solve(box, pw, room)
+    vented = boxheat.solve(box, pw, room, "both")
+    parts = []
+    for th in (power.budget(spec, res) or {}).get("thermal") or []:
+        if th.get("temp_c") is not None and th.get("limit_c"):
+            parts.append({"ref": th["ref"], "temp_c": round(th["temp_c"] + h["board_env_c"] - room, 1),
+                          "limit_c": th["limit_c"]})
+    warnings = []
+    if h["rise_k"] > 10:
+        tip = (f"; lid and side vents would bring it to {vented['air_c']:.0f} °C"
+               if h["vents"] == "design" and vented["air_c"] < h["air_c"] - 2 and box["kind"] != "case" else "")
+        warnings.append(f"The {pw * 1000:.0f} mW inside warms the air in the box to {h['air_c']:.0f} °C, "
+                        f"{h['rise_k']:.0f} °C above a {room:.0f} °C room{tip}")
+    for pt in parts:
+        if pt["temp_c"] > pt["limit_c"] - 10:
+            warnings.append(f"In the box {pt['ref']} reaches about {pt['temp_c']:.0f} °C, close to or over its "
+                            f"{pt['limit_c']} °C limit")
+    if h["surface_c"]["lid"] > 45:
+        warnings.append(f"The lid reaches {h['surface_c']['lid']:.0f} °C to the touch")
+    return {"room_c": room, "power_mw": round(pw * 1000, 1), "air_c": h["air_c"], "rise_k": h["rise_k"],
+            "surface_c": h["surface_c"], "vents": h["vents_label"], "material": h["material"],
+            "through_openings_pct": round(h["through_openings_w"] / max(pw, 1e-9) * 100),
+            "with_vents_c": vented["air_c"], "parts": parts, "warnings": warnings + h["notes"]}
+
+
+def scene(spec: dict, geo: dict, res: dict, checks: dict | None = None, box: dict | None = None,
+          dyn: dict | None = None) -> dict:
     """Everything the 3D Sim Lab draws, in mm from the board's top-left corner."""
     spec = design.normalise(spec)
     bb = geo.get("bbox") or [0, 0, spec["board"]["width_mm"], spec["board"]["height_mm"]]
@@ -407,10 +516,10 @@ def scene(spec: dict, geo: dict, res: dict, checks: dict | None = None) -> dict:
         if not net:
             continue
         half = max(pad["w"], pad["h"]) / 2 + 0.05
-        box = (pad["x"] - half, pad["y"] - half, pad["x"] + half, pad["y"] + half)
+        pbox = (pad["x"] - half, pad["y"] - half, pad["x"] + half, pad["y"] + half)
         src_conn = re.match(r"(J|BT|P|CN)\d", ref) and (net in supply_nets or net in ground)
         if src_conn or ref in reg_out or (net not in supply_nets and net not in ground and re.match(r"(U|IC)\d", ref)):
-            roots.setdefault(net, []).append(box)
+            roots.setdefault(net, []).append(pbox)
     tracks = []
     for t in flows(geo, roots, ground):
         tracks.append({"a": P(t["a"]), "b": P(t["b"]), "w": t["w"], "layer": t["layer"], "net": t["net"],
@@ -429,13 +538,28 @@ def scene(spec: dict, geo: dict, res: dict, checks: dict | None = None) -> dict:
         "zones": [{"layer": z["layer"], "net": z["net"], "pts": [P(q) for q in z["pts"]]} for z in geo.get("zones") or []],
         "net_kind": net_kind, "net_volts": _supply_volts(res),
         "descriptions": {r: comps[r].get("description") or "" for r in comps},
-        **dynamic(spec, res, checks),
+        "box": box,
+        **(dyn or dynamic(spec, res, checks, box)),
     }
 
 
-def whatif(spec: dict, base: dict, values: dict, out_dir: Path, checks: dict | None = None, **sim_kw) -> dict:
-    """Re-simulate with the slider values and return the changed parts of the scene."""
+def whatif(spec: dict, base: dict, values: dict, out_dir: Path, checks: dict | None = None,
+           box: dict | None = None, **sim_kw) -> dict:
+    """Re-simulate with the slider values and return the changed parts of the scene.
+
+    In the box, the circuit runs in what the board sees there (the inside air and the walls): its own heat
+    sets that, so a first run in room air (skipped when only the room or the box changed) gives the heat, then
+    the second runs inside."""
     spec = design.normalise(spec)
-    changed = apply(spec, base, {k: v for k, v in (values or {}).items() if not k.startswith(("airflow", "copper"))})
+    values = values or {}
+    changed = apply(spec, base, {k: v for k, v in values.items() if not k.startswith(("airflow", "copper"))})
+    bs = box_settings(box, values)
+    room = float(changed.get("simulation", {}).get("ambient_c") or base.get("ambient_c") or 25)
+    if bs["box"]:
+        electrical = any(k.startswith(("r:", "src:", "load:")) for k in values)
+        first = sim.simulate(changed, out_dir, **sim_kw) if electrical else base
+        env = boxheat.solve(box, boxheat.total_power_w(part_state(changed, first)), room, bs["vents"],
+                            bs["material"], bs["placement"])["board_env_c"]
+        changed.setdefault("simulation", {})["ambient_c"] = round(env, 1)
     res = sim.simulate(changed, out_dir, **sim_kw)
-    return dynamic(changed, res, checks)
+    return dynamic(changed, res, checks, box, bs, room)

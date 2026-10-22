@@ -5,7 +5,8 @@ The design names the case in board.case, using the figures from the box maker's 
   "case": {"name": "Hammond 1591XXSSBK", "inner_mm": [80, 50, 26],    // inside length (x), width (y), height
            "board_at_mm": [2, 2],          // board's top-left from the inside top-left corner (default: centred)
            "standoff_mm": 5,               // board underside above the inside floor (the bosses' height)
-           "wall_mm": 2.5, "floor_mm": 2.5}
+           "wall_mm": 2.5, "floor_mm": 2.5,
+           "material": "ABS"}              // ABS, PC, aluminium or "aluminium (painted)": for the heat estimate
 
 Put the mounting holes over the box's bosses with board.mounting_holes.positions (board coordinates), or import
 the box maker's DXF of the PCB outline. WholeBoard checks that the board and its tallest part fit, then draws a

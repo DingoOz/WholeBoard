@@ -1,7 +1,8 @@
 "use strict";
 // Sim Lab: the simulation drawn on the finished board in 3D. Current flows along the tracks, LEDs glow as
 // bright as the simulation says, and a heat map shows how the board warms up. Plain WebGL, no libraries, so it
-// works offline. The heat map is solved here: a 2D plate (FR4 plus copper) that spreads each part's heat and
+// works offline. With an enclosure the board can sit in its box: the server works out the inside air, and the
+// box is drawn see-through, coloured by its surface temperatures. The heat map is solved here: a 2D plate (FR4 plus copper) that spreads each part's heat and
 // loses it to the air from both faces.
 
 const SL_HEAT = [[0, 0, 4], [40, 11, 84], [101, 21, 110], [159, 42, 99], [212, 72, 66], [245, 125, 21], [250, 193, 39], [252, 255, 164]];
@@ -193,7 +194,7 @@ class SlThermal {
 class SimLab {
   constructor(host, scene, opts = {}) {
     this.host = host; this.scene = scene; this.opts = opts;
-    this.show = { flow: true, heat: false, glow: true, labels: false };
+    this.show = { flow: true, heat: false, glow: true, labels: false, box: !!scene.box_heat?.on };
     this.yaw = -0.35; this.pitch = 0.95; this.dist = 1; this.target = [scene.board.w / 2, 0, scene.board.h / 2];
     this.anim = null; this.caption = null; this.sel = null; this.hover = null; this.focusRefs = []; this.riskLevel = null;
     this.parts = Object.fromEntries(scene.parts.map(p => [p.ref, p]));
@@ -237,12 +238,17 @@ class SimLab {
     this.thermal.power = Object.fromEntries(Object.entries(dyn.state).map(([r, s]) => [r, s.power_mw || 0]));
     this.thermal.thetaJb = Object.fromEntries(Object.entries(dyn.state).map(([r, s]) => [r, s.theta_jb || 0]));
     if (dyn.ambient_c != null) this.thermal.settings.ambient = dyn.ambient_c;
+    // inside a box the board's faces lose heat only to the still air and the walls round it
+    const bh = dyn.box_heat;
+    this.thermal.settings.airflow = bh?.on ? bh.board_h : (this.userAirflow ?? 12);
+    if (bh?.on !== this._boxOn) { this._boxOn = bh?.on; this.show.box = !!bh?.on; }
     this.thermal.dirty = true;
     this.maxMa = Math.max(1, ...Object.values(dyn.net_ma || {}));
     this.texDirty = true;
   }
 
   setLocal(key, value) {
+    if (key === "airflow") { this.userAirflow = value; if (this.dyn?.box_heat?.on) return; }
     this.thermal.settings[key] = value;
     this.thermal.dirty = true;
   }
@@ -255,12 +261,12 @@ class SimLab {
     gl.attachShader(prog, sh(gl.VERTEX_SHADER, `attribute vec3 p; attribute vec3 n; attribute vec2 uv; uniform mat4 mvp; uniform mat4 model;
       varying vec3 vn; varying vec2 vuv; void main() { vn = mat3(model) * n; vuv = uv; gl_Position = mvp * vec4(p, 1.0); }`));
     gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `precision mediump float; varying vec3 vn; varying vec2 vuv;
-      uniform vec4 col; uniform sampler2D tex; uniform float useTex; uniform vec3 L; uniform vec3 emis;
+      uniform vec4 col; uniform sampler2D tex; uniform float useTex; uniform vec3 L; uniform vec3 emis; uniform float op;
       void main() { vec4 c = useTex > 0.5 ? texture2D(tex, vuv) : col; if (c.a < 0.5) discard;
-        float d = abs(dot(normalize(vn), L)); gl_FragColor = vec4(c.rgb * (0.42 + 0.62 * d) + emis, 1.0); }`));
+        float d = abs(dot(normalize(vn), L)); gl_FragColor = vec4(c.rgb * (0.42 + 0.62 * d) + emis, op); }`));
     gl.linkProgram(prog); gl.useProgram(prog);
     this.prog = prog;
-    this.loc = Object.fromEntries(["mvp", "model", "col", "tex", "useTex", "L", "emis"].map(k => [k, gl.getUniformLocation(prog, k)]));
+    this.loc = Object.fromEntries(["mvp", "model", "col", "tex", "useTex", "L", "emis", "op"].map(k => [k, gl.getUniformLocation(prog, k)]));
     this.attr = Object.fromEntries(["p", "n", "uv"].map(k => [k, gl.getAttribLocation(prog, k)]));
     const B = this.scene.board;
     // a unit cube: 6 faces with normals, no uv
@@ -309,14 +315,16 @@ class SimLab {
     gl.uniformMatrix4fv(L.mvp, false, mvp); gl.uniformMatrix4fv(L.model, false, model);
     gl.uniform4fv(L.col, opts.col || [1, 1, 1, 1]); gl.uniform1f(L.useTex, opts.tex ? 1 : 0);
     gl.uniform3fv(L.emis, opts.emis || [0, 0, 0]);
+    gl.uniform1f(L.op, opts.op ?? 1);
     if (opts.tex) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, opts.tex); gl.uniform1i(L.tex, 0); }
     gl.drawArrays(gl.TRIANGLES, 0, buf.n);
   }
 
   // ------------------------------------------------------------ camera
   _fitDist() {
-    const B = this.scene.board, t = Math.tan(0.31), aspect = (this.cw || 16) / (this.ch || 9);
-    return Math.max(B.w / (2 * t * aspect), B.h * 1.3 / (2 * t)) * 1.15 + 6;
+    const B = this.scene.board, t = Math.tan(0.31), aspect = (this.cw || 16) / (this.ch || 9), o = this.scene.box?.outer;
+    const w = o ? Math.max(B.w, o[2] - o[0]) : B.w, h = o ? Math.max(B.h, o[3] - o[1]) : B.h;
+    return Math.max(w / (2 * t * aspect), h * 1.3 / (2 * t)) * 1.15 + (o ? 10 : 6);
   }
 
   _eye() {
@@ -475,7 +483,9 @@ class SimLab {
     const T = this.thermal, img = this.heatImg;
     if (img.width !== T.nx) { img.width = T.nx; img.height = T.ny; }
     const ictx = img.getContext("2d"), data = ictx.createImageData(T.nx, T.ny);
-    const lo = T.minTemp() - T.settings.ambient, span = Math.max(1, T.maxTemp() - T.settings.ambient - lo);
+    // the board keeps its own range; the box's walls, cooler than any of it, show at the cool end
+    const lo = T.minTemp() - T.settings.ambient;
+    const span = Math.max(1, T.maxTemp() - T.settings.ambient - lo);
     this.heatLo = lo; this.heatSpan = span;
     for (let i = 0; i < T.theta.length; i++) {
       if (!T.den[i]) continue;
@@ -578,8 +588,49 @@ class SimLab {
       if (hl) { const pulse = 0.18 + 0.12 * Math.sin(now / 160); emis = emis.map((v, i) => v + pulse * [1, 0.85, 0.3][i]); }
       this._draw(this.cube, M4.mul(this.VP, M), M, { col, emis });
     }
+    if (this.show.box && this.scene.box && this.dyn.box_heat) this._drawBox(e);
     this._overlay(now);
     if (this.rec && this.recCtx) this.recCtx.drawImage(this.gl3, 0, 0), this.recCtx.drawImage(this.over, 0, 0);
+  }
+
+  // the enclosure, see-through: each wall a slab coloured by its outside temperature, vents as dark slots
+  _drawBox(eye) {
+    const gl = this.gl, b = this.scene.box, bh = this.dyn.box_heat, [x0, y0, x1, y1] = b.outer;
+    const z0 = b.z0, z1 = b.z1, w = b.wall;
+    const heat = this.show.heat, amb = this.thermal.settings.ambient;
+    const col = t => {
+      if (!heat) return [0.78, 0.82, 0.86, 1];
+      const c = slHeat((t - amb - (this.heatLo || 0)) / (this.heatSpan || 10));
+      return [c[0] / 255, c[1] / 255, c[2] / 255, 1];
+    };
+    const S = bh.surface_c;
+    const slabs = [
+      { box: [x0, z1 - b.lid, y0, x1, z1, y1], t: S.lid, op: 0.16 },
+      { box: [x0, z0, y0, x1, z0 + b.floor, y1], t: S.base, op: 0.5 },
+      { box: [x0, z0, y0, x0 + w, z1 - b.lid, y1], t: S.sides, op: 0.24 },
+      { box: [x1 - w, z0, y0, x1, z1 - b.lid, y1], t: S.sides, op: 0.24 },
+      { box: [x0 + w, z0, y0, x1 - w, z1 - b.lid, y0 + w], t: S.sides, op: 0.24 },
+      { box: [x0 + w, z0, y1 - w, x1 - w, z1 - b.lid, y1], t: S.sides, op: 0.24 },
+    ];
+    const dark = [0.08, 0.09, 0.1, 1];
+    for (const r of bh.lid_slots || []) slabs.push({ box: [r[0], z1 - b.lid - 0.05, r[1], r[2], z1 + 0.05, r[3]], col: dark, op: 0.5 });
+    for (const sl of bh.side_slots || []) {
+      const zz = [sl.z0, sl.z1];
+      const bx = sl.wall === "left" ? [x0 - 0.05, zz[0], sl.a, x0 + w + 0.05, zz[1], sl.b]
+        : sl.wall === "right" ? [x1 - w - 0.05, zz[0], sl.a, x1 + 0.05, zz[1], sl.b]
+        : sl.wall === "top" ? [sl.a, zz[0], y0 - 0.05, sl.b, zz[1], y0 + w + 0.05]
+        : [sl.a, zz[0], y1 - w - 0.05, sl.b, zz[1], y1 + 0.05];
+      slabs.push({ box: bx, col: dark, op: 0.5 });
+    }
+    // far ones first, so the see-through walls blend in order
+    const dist = s => Math.hypot((s.box[0] + s.box[3]) / 2 - eye[0], (s.box[1] + s.box[4]) / 2 - eye[1], (s.box[2] + s.box[5]) / 2 - eye[2]);
+    slabs.sort((a, c) => dist(c) - dist(a));
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+    for (const s of slabs) {
+      const M = M4.box(...s.box);
+      this._draw(this.cube, M4.mul(this.VP, M), M, { col: s.col || col(s.t), op: s.op });
+    }
+    gl.depthMask(true); gl.disable(gl.BLEND);
   }
 
   _overlay(now) {
@@ -641,10 +692,12 @@ class SimLab {
     const lx = 12 * k, ly = 12 * k;
     if (this.show.heat) {
       const amb = this.thermal.settings.ambient + (this.heatLo || 0), span = this.heatSpan || 10, w = 160 * k;
-      c.fillStyle = "rgba(8,12,14,0.75)"; c.fillRect(lx - 6 * k, ly - 4 * k, w + 12 * k, 40 * k);
+      const bx = this.dyn.box_heat, inBox = bx?.on;
+      c.fillStyle = "rgba(8,12,14,0.75)"; c.fillRect(lx - 6 * k, ly - 4 * k, Math.max(w, inBox ? 300 * k : 0) + 12 * k, 40 * k);
       for (let i = 0; i < w; i++) { const [r, g, b] = slHeat(i / w); c.fillStyle = `rgb(${r},${g},${b})`; c.fillRect(lx + i, ly + 16 * k, 1, 10 * k); }
       c.fillStyle = "#fff";
-      c.fillText(`Board temperature in ${this.thermal.settings.ambient.toFixed(0)} °C air${this.thermal.converged ? "" : " (settling…)"}`, lx, ly + 10 * k);
+      c.fillText((inBox ? `In the box: ${bx.room_c.toFixed(0)} °C room, ${bx.air_c.toFixed(1)} °C inside` : `Board temperature in ${this.thermal.settings.ambient.toFixed(0)} °C air`)
+        + (this.thermal.converged ? "" : " (settling…)"), lx, ly + 10 * k);
       c.fillText(`${amb.toFixed(1)} °C`, lx, ly + 36 * k + 2);
       const hi = `${(amb + span).toFixed(1)} °C`; c.fillText(hi, lx + w - c.measureText(hi).width, ly + 36 * k + 2);
     } else if (this.show.flow) {
@@ -654,6 +707,30 @@ class SimLab {
         c.fillStyle = col; c.fillRect(x, ly + 4 * k, 14 * k, 4 * k); x += 18 * k;
         c.fillStyle = "#fff"; const t = { power: "supply current", ground: "return", signal: "signals" }[kind]; c.fillText(t, x, ly + 10 * k); x += c.measureText(t).width + 12 * k;
       }
+    }
+    const bx = this.dyn.box_heat;
+    if (bx?.on && this.show.box && this.scene.box) {
+      // the box's edges, so its shape reads through the see-through walls
+      const [x0, y0, x1, y1] = this.scene.box.outer, z0 = this.scene.box.z0, z1 = this.scene.box.z1;
+      const P = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+      c.strokeStyle = "rgba(220,230,240,0.45)"; c.lineWidth = 1.2 * k;
+      c.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const [a, b] = [P[i], P[(i + 1) % 4]];
+        for (const [p0, p1] of [[[a[0], z0, a[1]], [b[0], z0, b[1]]], [[a[0], z1, a[1]], [b[0], z1, b[1]]], [[a[0], z0, a[1]], [a[0], z1, a[1]]]]) {
+          const A = this.project(...p0), B = this.project(...p1);
+          if (A && B) { c.moveTo(A[0], A[1]); c.lineTo(B[0], B[1]); }
+        }
+      }
+      c.stroke();
+    }
+    if (bx?.on && this.show.box) {
+      const lines = [`Inside air ${bx.air_c.toFixed(1)} °C`, `Lid ${bx.surface_c.lid.toFixed(1)} · walls ${bx.surface_c.sides.toFixed(1)} · base ${bx.surface_c.base.toFixed(1)} °C`,
+        `${bx.vents_label}, ${bx.material}` + (bx.flow_l_min >= 0.05 ? ` · ${bx.flow_l_min.toFixed(1)} l/min of air` : "")];
+      c.font = `500 ${11 * k}px Inter, system-ui, sans-serif`;
+      const bw = Math.max(...lines.map(l => c.measureText(l).width)) + 14 * k, x = this.cw - bw - 12 * k;
+      c.fillStyle = "rgba(8,12,14,0.75)"; c.fillRect(x, 8 * k, bw, (lines.length * 15 + 8) * k);
+      c.fillStyle = "#fff"; lines.forEach((l, i) => c.fillText(l, x + 7 * k, (22 + 15 * i) * k));
     }
     if (this.caption) this._caption(c, k);
   }
@@ -754,6 +831,23 @@ async function slTour(lab, opts = {}) {
     const T = lab.thermal.maxTemp();
     lab.caption = { ...lab.caption, text: `The hottest spot settles at ${T.toFixed(1)} °C in ${lab.thermal.settings.ambient.toFixed(0)} °C air` + (hot.length ? `, around ${hot[0][0]}.` : ".") };
     if (hot.length) { lab.focusRefs = [hot[0][0]]; await lab.focus([hot[0][0]], 1400); await slWait(1800); lab.focusRefs = []; }
+  });
+  if (sc.box && dyn0.box_heat && opts.whatif) steps.push(async () => {
+    const bx0 = dyn0.box_heat;
+    lab.show = { flow: false, heat: true, glow: false, labels: false, box: true };
+    let d = dyn0;
+    if (!bx0.on) { d = await opts.whatif({ box: 1 }); lab.update(d); lab.show.box = true; lab.show.heat = true; }
+    const bx = d.box_heat;
+    lab.caption = { kicker: "In its enclosure", title: `Inside ${sc.box.name}`, text: `${(bx.power_w * 1000).toFixed(0)} mW warms the air inside to ${bx.air_c.toFixed(1)} °C, ${bx.rise_k.toFixed(0)} °C above the ${bx.room_c.toFixed(0)} °C room. The lid sits at ${bx.surface_c.lid.toFixed(0)} °C.` };
+    await lab.flyTo({ pitch: 0.55, dist: lab.fitDist * 1.05, target: [sc.board.w / 2, 0, sc.board.h / 2] }, 1500); await lab.orbit(3200, 0.6);
+    if (bx.vents !== "both") {
+      try {
+        const v = await opts.whatif({ box: 1, vents: "both" });
+        lab.update(v); lab.show.box = true; lab.show.heat = true;
+        lab.caption = { ...lab.caption, title: "With lid and side vents", text: `Cool air in low down, warm air out through the lid: the inside drops to ${v.box_heat.air_c.toFixed(1)} °C (${(bx.air_c - v.box_heat.air_c).toFixed(1)} °C cooler), with ${v.box_heat.flow_l_min.toFixed(1)} litres of air a minute.` };
+        await lab.orbit(3200, -0.5);
+      } finally { lab.update(dyn0); }
+    }
   });
   const risks = (dyn0.risks || []).slice(0, 4);
   risks.forEach((rk, i) => steps.push(async () => {

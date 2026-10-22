@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from wholeboard import blocks, bringup, case, design, dxf, fwbuild, ibom, impedance, power
+from wholeboard import blocks, bringup, case, design, dxf, fwbuild, ibom, impedance, power, sexpr
 from wholeboard.jlc import fabs, stock
 from wholeboard.kicad import libs
 
@@ -303,7 +303,7 @@ def test_fab_comparison():
     assert fabs.pcbway(150, 80, 2, 5)["total"] is None
     rows = fabs.compare({"board": {"width_mm": 50.8, "height_mm": 25.4, "layers": 2}},
                         {"quantity": 5, "pcb": {"subtotal": 2.0}, "shipping": {"subtotal": 3.0}})
-    assert [r["fab"] for r in rows] == ["JLCPCB", "OSH Park", "PCBWay"] and rows[0]["total"] == 5.0
+    assert [r["fab"] for r in rows] == ["JLCPCB", "OSH Park", "PCBWay", "Aisler"] and rows[0]["total"] == 5.0
 
 
 # ------------------------------------------------------------------ firmware build
@@ -432,3 +432,35 @@ def test_circle_courtyards_and_small_holes():
     assert libs.load_footprint("MountingHole:MountingHole_3.2mm_M3").courtyard == (-3.45, -3.45, 3.45, 3.45)
     text = sexpr.dumps(board.footprint_instance(libs.load_footprint("RF_Module:ESP32-C3-WROOM-02"), "U1", "x", 0, 0))
     assert text.count("(drill 0.3)") == 12 and "(drill 0.2)" not in text
+
+
+@needs_libs
+def test_antenna_modules_keep_copper_away():
+    """Every module with an antenna has a keep-out under it, so the router and the pour stay clear."""
+    from wholeboard.kicad import libs
+    mods = [c for b in blocks.BUILTIN for c in b["components"]
+            if c.get("antenna") or str(c.get("footprint", "")).startswith("RF_Module:")]
+    assert len(mods) >= 4
+    for c in mods:
+        fp = libs.load_footprint(c["footprint"])
+        assert fp is not None and "keepout" in sexpr.dumps(fp.node), c["footprint"]
+
+
+@needs_libs
+@pytest.mark.parametrize("bid", ["ethernet_lan8720a", "usb_pd_ch224k_12v", "buck_tps563201_3v3", "stm32g030_min"])
+def test_new_blocks_wire_up(bid, tmp_path):
+    from wholeboard.kicad import cli, schematic
+    b = blocks.catalogue()[bid]
+    spec = design.normalise({"name": "t", "board": {"width_mm": 120, "height_mm": 120}, "blocks": [
+        {"block": bid, "name": "B", "connect": {k: f"N_{k}" for k, v in b["ports"].items() if v.get("required")}}]})
+    if bid == "ethernet_lan8720a":
+        assert {tuple(i["nets"]) for i in spec["impedance"]} == {("B_TXP", "B_TXN"), ("B_RXP", "B_RXN"), (
+            "N_TXD0", "N_TXD1", "N_TXEN", "N_RXD0", "N_RXD1", "N_CRS_DV", "N_REFCLK")}
+    if bid == "usb_pd_ch224k_12v":
+        vdd = next(n for n in spec["nets"] if n["name"] == "B_VDD")["pins"]
+        assert any(p.endswith(".3") for p in vdd)          # CFG3 high asks for 12 V
+    if cli.find_kicad_cli():
+        sch = schematic.build(spec, tmp_path)
+        erc = cli.erc(Path(sch["sch"]))
+        real = [e for e in erc["errors"] if e["type"] != "pin_not_driven"]    # alone, nothing drives its inputs
+        assert real == [], real

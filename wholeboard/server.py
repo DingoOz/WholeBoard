@@ -137,10 +137,10 @@ def get_config():
 async def set_config(request: Request):
     patch = await request.json()
     patch.pop("server", None)             # the password has its own endpoint
-    for key in ("anthropic_api_key", "openai_api_key"):
-        v = (patch.get("ai") or {}).get(key)
+    for sect, key in config.SECRETS:
+        v = (patch.get(sect) or {}).get(key)
         if isinstance(v, str) and v.startswith("•"):
-            patch["ai"].pop(key)          # masked value sent back unchanged
+            patch[sect].pop(key)          # masked value sent back unchanged
     cfg = config.update(patch)
     libs._INDEX.clear()
     _status_cache.clear()
@@ -366,6 +366,19 @@ async def requote(pid: str, request: Request):
     return res
 
 
+@app.post("/api/projects/{pid}/panel")
+async def make_panel(pid: str, request: Request):
+    """Draw the panel with KiKit and export its Gerbers, BOM and CPL."""
+    p = _project(pid)
+    if not p.state.get("spec"):
+        raise HTTPException(400, "no design yet")
+    body = await request.json()
+    nx, ny = int(body.get("nx") or 0), int(body.get("ny") or 0)
+    if not (1 <= nx <= 10 and 1 <= ny <= 10 and nx * ny >= 2):
+        raise HTTPException(400, "nx and ny must make at least two boards")
+    return await asyncio.to_thread(pipeline.run_panel, p, p.state["spec"], nx, ny)
+
+
 @app.post("/api/projects/{pid}/swaps")
 async def apply_swaps(pid: str, request: Request):
     """Use cheaper or in-stock LCSC parts from the quote's suggestions, then re-quote."""
@@ -443,8 +456,10 @@ async def simlab_whatif(pid: str, request: Request):
     """Re-simulate the board with the Sim Lab's slider values."""
     p = _project(pid)
     body = await request.json()
-    values = {str(k): float(v) for k, v in (body.get("values") or {}).items()}
     try:
+        # numbers, except the enclosure's choices (vents, wall material, where it stands)
+        values = {str(k): str(v)[:40] if k in ("vents", "material", "placement") else float(v)
+                  for k, v in (body.get("values") or {}).items()}
         return await asyncio.to_thread(pipeline.simlab_whatif, p, values)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e

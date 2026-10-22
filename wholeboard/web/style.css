@@ -128,6 +128,8 @@ main { flex: 1; min-width: 0; display: flex; }
 .vis.fill .body { flex: 1; padding: 0; position: relative; }
 .boardview { position: absolute; inset: 0; overflow: hidden; background: var(--board-bg); border-radius: 0 0 12px 12px; }
 .boardview canvas { display: block; cursor: grab; touch-action: none; }
+.panel-view { position: relative; height: 440px; margin-bottom: 10px; }
+.panel-view .boardview { border-radius: 8px; }
 .board-bar { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
 .board-bar .chip { background: rgba(20,26,23,.85); color: #dfe6e1; border-color: #34403a; }
 .board-tip { position: absolute; display: none; pointer-events: none; background: rgba(10,14,12,.92); color: #fff; padding: 3px 8px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
@@ -142,6 +144,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .tag { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--line); }
 .tag.basic { color: var(--ok); border-color: var(--ok); } .tag.preferred { color: var(--info); border-color: var(--info); }
 .tag.extended { color: var(--warn); border-color: var(--warn); } .tag.bad { color: var(--danger); border-color: var(--danger); }
+.tag.warn { color: var(--warn); border-color: var(--warn); }
 .pins { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .list-err li { color: var(--danger); } .list-warn li { color: var(--warn); }
 ul.list-err, ul.list-warn { margin: 6px 0; padding-left: 20px; }
@@ -317,3 +320,16 @@ fieldset.expert legend label.inline { display:inline-flex; gap:6px; align-items:
 .tour-btns { display: flex; gap: 6px; align-items: center; }
 .tour-btns .spacer { flex: 1; }
 @media (max-width: 1250px) { #tourBtn { padding-left: 8px; padding-right: 8px; } }
+
+.simlab-choice select { grid-column: 1 / -1; width: 100%; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; }
+.simlab-note { font-size: 12px; margin: 2px 0 8px; }
+.box-heat { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.box-heat.warm { border-color: var(--warn); }
+.box-heat h5 { margin: 0 0 6px; }
+.box-heat .btn { margin-top: 8px; }
+.sheet-wrap { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.sheet-wrap .zoomimg { position: relative; inset: auto; flex: 1; min-height: 0; border-radius: 0 0 12px 12px; }
+.sheet-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.sheet-tabs button { font: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 12px;
+  background: transparent; color: var(--muted); cursor: pointer; }
+.sheet-tabs button[aria-selected="true"] { color: var(--text); border-color: var(--accent); background: var(--panel-2); }

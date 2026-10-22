@@ -122,6 +122,7 @@ def _footprint(node: list, out: dict) -> None:
         lay = find(p, "layers")
         lays = [str(x) for x in lay[1:]] if lay else []
         drill = find(p, "drill")
+        rr = find(p, "roundrect_rratio")
         out["pads"].append({
             "ref": ref, "name": str(p[1]), "x": round(fx + dx, 4), "y": round(fy + dy, 4),
             "w": num(size[1]) if size else 0, "h": num(size[2]) if size else 0,
@@ -130,6 +131,7 @@ def _footprint(node: list, out: dict) -> None:
             "front": any(l in ("F.Cu", "*.Cu") for l in lays),
             "back": any(l in ("B.Cu", "*.Cu") for l in lays),
             "net": _net(p),
+            **({"rratio": num(rr[1])} if rr and str(p[3]) == "roundrect" else {}),
         })
 
 

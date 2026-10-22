@@ -5,12 +5,13 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 import uuid
 from pathlib import Path
 
-from .. import design, impedance, sexpr
+from .. import design, impedance, mains, sexpr
 from ..sexpr import S, Sym, find, fmt, num, tag
-from . import libs, schematic
+from . import dru, libs, schematic
 
 ORIGIN = (100.0, 100.0)   # board top-left in KiCad coordinates
 FORMAT_VERSION = "20260206"
@@ -125,6 +126,90 @@ def _rotate_at(node: list, rot: float) -> None:
         at.append(fmt(new))
 
 
+_SIDED = ("Cu", "Adhes", "Paste", "SilkS", "Silkscreen", "Mask", "CrtYd", "Courtyard", "Fab")
+
+
+def _flip_layer(name: str) -> str:
+    if len(name) > 2 and name[:2] in ("F.", "B.") and name[2:] in _SIDED:
+        return ("B." if name[0] == "F" else "F.") + name[2:]
+    return name
+
+
+def _mirror(node: list) -> None:
+    """Negate the y of every point in a footprint graphic or pad primitive, and swap its layers."""
+    for c in node:
+        t = tag(c)
+        if t in ("start", "end", "mid", "center", "xy") and len(c) >= 3:
+            c[2] = fmt(-num(c[2]))
+        elif t in ("layer", "layers"):
+            for i in range(1, len(c)):
+                if isinstance(c[i], str):
+                    c[i] = _flip_layer(c[i])
+        elif t in ("pts", "arc", "primitives") or (t or "").startswith("gr_"):
+            _mirror(c)
+
+
+def _flip_at(node: list, angle) -> None:
+    """(at x y a) -> (at x -y angle(a)), in the footprint's frame."""
+    at = find(node, "at")
+    if not at or len(at) < 3:
+        return
+    has = len(at) > 3 and re.fullmatch(r"-?[\d.]+", str(at[3])) is not None
+    a = num(at[3]) if has else 0.0
+    at[2] = fmt(-num(at[2]))
+    new = angle(a) % 360
+    if has:
+        at[3] = fmt(new)
+    elif new:
+        at.insert(3, fmt(new))
+
+
+def _flip_child(child: list) -> None:
+    """Put one footprint item on the bottom side: KiCad's top-bottom flip about the footprint origin.
+
+    Local y is negated; pad angles become -a and text angles 180 - a; side-specific layers swap and text on them
+    is mirrored. (The same rules as TraceMaker's flip, checked there against pcbnew.)"""
+    t = tag(child)
+    if t == "pad":
+        _flip_at(child, lambda a: -a)
+        for q in child:
+            qt = tag(q)
+            if qt == "layers":
+                _mirror([q])
+            elif qt == "rect_delta" and len(q) >= 3:
+                q[2] = fmt(-num(q[2]))
+            elif qt == "chamfer":
+                for i in range(1, len(q)):
+                    v = str(q[i])
+                    q[i] = Sym("bottom_" + v[4:]) if v.startswith("top_") else Sym("top_" + v[7:]) if v.startswith("bottom_") else q[i]
+            elif qt == "drill":
+                off = find(q, "offset")
+                if off and len(off) >= 3:
+                    off[2] = fmt(-num(off[2]))
+            elif qt == "primitives":
+                _mirror(q)
+    elif t in ("property", "fp_text"):
+        lay = find(child, "layer")
+        if not lay:
+            return
+        _flip_at(child, lambda a: 180 - a)
+        if _flip_layer(str(lay[1])) != str(lay[1]):
+            eff = find(child, "effects")
+            if eff is None:
+                child.append([Sym("effects"), S(Sym("justify"), Sym("mirror"))])
+            else:
+                j = find(eff, "justify")
+                if j is None:
+                    eff.append(S(Sym("justify"), Sym("mirror")))
+                elif "mirror" in [str(x) for x in j[1:]]:
+                    j[:] = [x for x in j if str(x) != "mirror"]
+                else:
+                    j.append(Sym("mirror"))
+            lay[1] = _flip_layer(str(lay[1]))
+    elif t in ("fp_line", "fp_rect", "fp_circle", "fp_arc", "fp_poly", "fp_curve"):
+        _mirror(child)
+
+
 MIN_DRILL_MM = 0.3      # JLCPCB's standard-process smallest hole, as min_through_hole_diameter below
 
 
@@ -141,14 +226,15 @@ def _min_drill(pad: list) -> None:
 
 def footprint_instance(fp: libs.Footprint, ref: str, value: str, x: float, y: float,
                        rot: float = 0.0, locked: bool = False, pad_nets: dict | None = None,
-                       extra_props: dict | None = None, sheet_link: tuple[str, str] | None = None) -> list:
-    """A board footprint built from a library footprint."""
+                       extra_props: dict | None = None, sheet_link: tuple[str, str, str] | None = None,
+                       bottom: bool = False) -> list:
+    """A board footprint built from a library footprint, on the top side or flipped onto the bottom."""
     pad_nets = pad_nets or {}
     src = copy.deepcopy(fp.node)
     out: list = [Sym("footprint"), fp.lib_id]
     if locked:
         out.append(S(Sym("locked"), Sym("yes")))
-    out += [S(Sym("layer"), "F.Cu"), [Sym("uuid"), uid()], S(Sym("at"), x, y, *([rot] if rot else []))]
+    out += [S(Sym("layer"), "B.Cu" if bottom else "F.Cu"), [Sym("uuid"), uid()], S(Sym("at"), x, y, *([rot] if rot else []))]
     skip = {"version", "generator", "generator_version", "layer", "uuid", "at", "locked", "placed"}
     have_props = set()
     for child in src[2:]:
@@ -158,6 +244,8 @@ def footprint_instance(fp: libs.Footprint, ref: str, value: str, x: float, y: fl
         for n in sexpr.walk(child):
             if tag(n) == "uuid" and len(n) > 1:
                 n[1] = uid()
+        if bottom:
+            _flip_child(child)
         if t == "property" and len(child) > 2:
             have_props.add(child[1])
             if child[1] == "Reference":
@@ -180,8 +268,8 @@ def footprint_instance(fp: libs.Footprint, ref: str, value: str, x: float, y: fl
                              S(Sym("net"), net))
         out.append(child)
     if sheet_link:
-        sym_uuid, sheetfile = sheet_link
-        out += [S(Sym("path"), f"/{sym_uuid}"), S(Sym("sheetname"), "/"), S(Sym("sheetfile"), sheetfile)]
+        path, sheetname, sheetfile = sheet_link
+        out += [S(Sym("path"), path), S(Sym("sheetname"), sheetname), S(Sym("sheetfile"), sheetfile)]
     for key, val in (extra_props or {}).items():
         if not val:
             continue
@@ -191,7 +279,7 @@ def footprint_instance(fp: libs.Footprint, ref: str, value: str, x: float, y: fl
                     child[2] = str(val)
             continue
         out.insert(5, [Sym("property"), key, str(val), S(Sym("at"), 0, 0, 0),
-                       S(Sym("layer"), "F.Fab"), S(Sym("hide"), Sym("yes")), [Sym("uuid"), uid()],
+                       S(Sym("layer"), "B.Fab" if bottom else "F.Fab"), S(Sym("hide"), Sym("yes")), [Sym("uuid"), uid()],
                        [Sym("effects"), [Sym("font"), S(Sym("size"), 1, 1), S(Sym("thickness"), 0.15)]]])
     return out
 
@@ -220,6 +308,7 @@ def build(spec: dict, out_dir: Path) -> dict:
 
     # Parts without a fixed place start in a pile beside the board, for the placer.
     pile_x, pile_y, row_h = x0 + w + 10, y0, 0.0
+    links = schematic.board_links(spec)
     placed_notes = []
     for c in spec["components"]:
         fp = libs.load_footprint(c["footprint"])
@@ -243,9 +332,9 @@ def build(spec: dict, out_dir: Path) -> dict:
             row_h = max(row_h, fh)
             rot, locked = 0.0, False
         props = {"LCSC": c.get("lcsc"), "MPN": c.get("mpn"), "Description": c.get("description")}
-        link = (schematic.symbol_uuid(name, ref), f"{name}.kicad_sch")
+        link = links.get(ref)
         pcb.append(footprint_instance(fp, ref, str(c.get("value") or ref), x, y, rot, locked,
-                                      pad_nets, props, link))
+                                      pad_nets, props, link, bottom=design.on_bottom(c)))
 
     mh = b.get("mounting_holes")
     if mh:
@@ -258,6 +347,8 @@ def build(spec: dict, out_dir: Path) -> dict:
     else:
         pcb += outline(w, h, float(b.get("corner_radius_mm") or 0))
 
+    pcb += fixed_copper(spec)
+
     for layer, net in (b.get("planes") or {}).items():
         if layer in copper_layers(nlayers):
             pcb.append(zone(net, layer, w, h, rules["edge_clearance_mm"], rules["clearance_mm"]))
@@ -267,7 +358,33 @@ def build(spec: dict, out_dir: Path) -> dict:
     pcb_path.write_text(sexpr.dumps(pcb) + "\n", encoding="utf-8")
     pro_path = out_dir / f"{name}.kicad_pro"
     pro_path.write_text(json.dumps(project_json(spec), indent=2), encoding="utf-8")
+    dru.write(spec, out_dir)
     return {"pcb": str(pcb_path), "pro": str(pro_path), "notes": placed_notes}
+
+
+def fixed_copper(spec: dict) -> list[list]:
+    """Tracks and vias the router must keep (hand-routed in KiCad), locked."""
+    x0, y0 = ORIGIN
+    layers = set(copper_layers(int(spec["board"]["layers"])))
+    out = []
+    for cu in spec.get("fixed_copper") or []:
+        net = cu["net"]
+        for t in cu.get("tracks") or []:
+            if t["layer"] in layers:
+                out.append([Sym("segment"), S(Sym("start"), x0 + t["a"][0], y0 + t["a"][1]),
+                            S(Sym("end"), x0 + t["b"][0], y0 + t["b"][1]), S(Sym("width"), float(t["w"])),
+                            S(Sym("locked"), Sym("yes")), S(Sym("layer"), t["layer"]), S(Sym("net"), net), [Sym("uuid"), uid()]])
+        for t in cu.get("arcs") or []:
+            if t["layer"] in layers:
+                out.append([Sym("arc"), S(Sym("start"), x0 + t["a"][0], y0 + t["a"][1]),
+                            S(Sym("mid"), x0 + t["m"][0], y0 + t["m"][1]), S(Sym("end"), x0 + t["b"][0], y0 + t["b"][1]),
+                            S(Sym("width"), float(t["w"])), S(Sym("locked"), Sym("yes")), S(Sym("layer"), t["layer"]),
+                            S(Sym("net"), net), [Sym("uuid"), uid()]])
+        for v in cu.get("vias") or []:
+            out.append([Sym("via"), S(Sym("locked"), Sym("yes")), S(Sym("at"), x0 + v["p"][0], y0 + v["p"][1]),
+                        S(Sym("size"), float(v["d"])), S(Sym("drill"), float(v["drill"])),
+                        S(Sym("layers"), "F.Cu", "B.Cu"), S(Sym("net"), net), [Sym("uuid"), uid()]])
+    return out
 
 
 def add_ground_pour(pcb_path: Path, spec: dict) -> bool:
@@ -295,7 +412,8 @@ def project_json(spec: dict) -> dict:
     r = spec["rules"]
     power = [n["name"] for n in spec["nets"] if n.get("class") == "power"]
     controlled = impedance.netclasses(spec)
-    imp_nets = {n for k in controlled for n in k["nets"]}
+    hv = mains.netclasses(spec)
+    imp_nets = {n for k in controlled for n in k["nets"]} | {n for v in hv.values() for n in v}
 
     def netclass(name: str, width: float, prio: int, dp_width: float = 0.2, dp_gap: float = 0.25) -> dict:
         return {
@@ -333,12 +451,14 @@ def project_json(spec: dict) -> dict:
             "classes": [netclass("Default", r["track_mm"], 2147483647),
                         netclass("Power", r["power_track_mm"], 0)]
             + [netclass(k["name"], k["width"] or r["track_mm"], 1 + i, k["width"] or r["track_mm"],
-                        k["gap"] or max(r["clearance_mm"], 0.15)) for i, k in enumerate(controlled)],
+                        k["gap"] or max(r["clearance_mm"], 0.15)) for i, k in enumerate(controlled)]
+            + [netclass(name, r["power_track_mm"], len(controlled) + 1 + i) for i, (name, nets) in enumerate(hv.items()) if nets],
             "meta": {"version": 5},
             "net_colors": None,
             "netclass_assignments": None,
             "netclass_patterns": [{"netclass": "Power", "pattern": n} for n in power if n not in imp_nets]
-            + [{"netclass": k["name"], "pattern": n} for k in controlled for n in k["nets"]],
+            + [{"netclass": k["name"], "pattern": n} for k in controlled for n in k["nets"]]
+            + [{"netclass": name, "pattern": n} for name, nets in hv.items() for n in nets],
         },
         "pcbnew": {"page_layout_descr_file": ""},
         "sheets": [], "text_variables": {},

@@ -29,7 +29,7 @@ import math
 import re
 from dataclasses import dataclass, field
 
-from . import blocks, impedance
+from . import blocks, impedance, mains
 from .kicad import libs
 
 REF_RE = re.compile(r"^[A-Z]+[A-Z_]*\d+$")
@@ -85,6 +85,8 @@ def normalise(spec: dict) -> dict:
     for n in spec["nets"]:
         n.setdefault("class", "signal")
         n["pins"] = [str(p) for p in n.get("pins") or []]
+    if b.get("fiducials") and not any(c.get("fiducial") for c in spec["components"]):
+        _add_fiducials(spec)
     if b.get("test_points"):
         _add_test_points(spec, b["test_points"])
         _place_test_points(spec)
@@ -92,6 +94,58 @@ def normalise(spec: dict) -> dict:
 
 
 TEST_POINT_FP = "TestPoint:TestPoint_Pad_D1.5mm"
+FIDUCIAL_FP = "Fiducial:Fiducial_1mm_Mask2mm"
+FINE_PITCH = re.compile(r"_P0\.([0-4]\d*|50*)mm")
+
+
+def _fixed_boxes(spec: dict) -> list[tuple]:
+    boxes = []
+    for c in spec["components"]:
+        pl = c.get("placement") or {}
+        if "x_mm" not in pl:
+            continue
+        fp = libs.load_footprint(c.get("footprint") or "")
+        x0, y0, x1, y1 = fp.courtyard if fp else (-2, -2, 2, 2)
+        if round(float(pl.get("rotation") or 0)) % 180 == 90:
+            x0, y0, x1, y1 = y0, x0, y1, x1
+        x, y = float(pl["x_mm"]), float(pl["y_mm"])
+        boxes.append((x + x0, y + y0, x + x1, y + y1))
+    return boxes
+
+
+def _add_fiducials(spec: dict) -> None:
+    """Three fiducials for the assembly machine's camera, in three corners (not the fourth, so the board's
+    orientation is unambiguous), clear of mounting holes and fixed parts."""
+    b = spec["board"]
+    w, h = float(b["width_mm"]), float(b["height_mm"])
+    poly = b.get("outline") or [[0, 0], [w, 0], [w, h], [0, h]]
+    holes = hole_positions(spec)
+    hfp = libs.load_footprint(hole_footprint(spec)) if holes else None
+    hole_r = max(abs(v) for v in hfp.courtyard) if hfp else 3.5
+    r = 1.5                                       # the 2 mm mask opening's courtyard plus a margin
+    boxes = _fixed_boxes(spec)
+    used = {str(c.get("ref")) for c in spec["components"]}
+    k = 1
+    for cx, cy, sx, sy in ((0, 0, 1, 1), (w, 0, -1, 1), (0, h, 1, -1)):
+        spots = sorted(((cx + sx * dx, cy + sy * dy) for dx in _steps(2.5, min(15, w / 2)) for dy in _steps(2.5, min(15, h / 2))),
+                       key=lambda p: math.hypot(p[0] - cx, p[1] - cy))
+        for x, y in spots:
+            if not inside(poly, x, y) or edge_distance(poly, x, y) < 2.5:
+                continue
+            if any(math.hypot(x - hx, y - hy) < hole_r + r for hx, hy in holes):
+                continue
+            if any(bx0 - r < x < bx1 + r and by0 - r < y < by1 + r for bx0, by0, bx1, by1 in boxes):
+                continue
+            while f"FID{k}" in used:
+                k += 1
+            used.add(f"FID{k}")
+            spec["components"].append({"ref": f"FID{k}", "value": "Fiducial", "footprint": FIDUCIAL_FP,
+                                       "symbol": "Mechanical:Fiducial",
+                                       "description": "fiducial for the assembly machine", "fiducial": True,
+                                       "sim": {"skip": True},
+                                       "placement": {"x_mm": round(x, 2), "y_mm": round(y, 2), "locked": True}})
+            boxes.append((x - r, y - r, x + r, y + r))
+            break
 
 
 def _add_test_points(spec: dict, which) -> None:
@@ -226,7 +280,7 @@ def validate(spec: dict) -> Report:
         fps[ref] = fp
         x0, y0, x1, y1 = fp.courtyard
         area += (x1 - x0) * (y1 - y0)
-        if not c.get("lcsc") and not c.get("dnp") and not fid.startswith(("MountingHole", "TestPoint")):
+        if not c.get("lcsc") and not c.get("dnp") and not fid.startswith(("MountingHole", "TestPoint", "Fiducial")):
             rep.warnings.append(f"{ref}: no LCSC part number, so JLCPCB cannot assemble or price it")
 
     used: dict[str, str] = {}
@@ -273,6 +327,13 @@ def validate(spec: dict) -> Report:
     ie, iw = impedance.validate(spec)
     rep.errors += ie
     rep.warnings += iw
+    me, mw = mains.validate(spec)
+    rep.errors += me
+    rep.warnings += mw
+    fine = [c["ref"] for c in spec["components"] if FINE_PITCH.search(str(c.get("footprint") or ""))]
+    if fine and not b.get("fiducials") and not b.get("panel"):
+        rep.warnings.append(f"{', '.join(fine[:4])} have 0.5 mm pitch or finer: set board.fiducials true (three "
+                            "fiducials in the corners) or order a panel (board.panel), whose rails carry them")
 
     board_area = w * h
     if b.get("outline"):
@@ -339,6 +400,11 @@ def _box(points: list[tuple[float, float]]) -> tuple[float, float, float, float]
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def on_bottom(c: dict) -> bool:
+    """True for a part the spec puts on the bottom side of the board."""
+    return str((c.get("placement") or {}).get("side") or "top").lower() in ("bottom", "back", "b.cu")
+
+
 def _overlap(a, b, gap: float = 0.0) -> bool:
     return a[0] < b[2] + gap and b[0] < a[2] + gap and a[1] < b[3] + gap and b[1] < a[3] + gap
 
@@ -347,6 +413,8 @@ def _check_fixed(spec: dict, fps: dict, rep: Report, w: float, h: float) -> None
     """Parts with a fixed placement: pads inside the board, no clashes with each other or holes."""
     edge = float(spec["rules"].get("edge_clearance_mm", 0.3))
     boxes: list[tuple[str, tuple]] = []
+    sides: dict[str, str] = {}           # a through-hole part takes room on both sides
+    from_kicad = {c.get("ref") for c in spec["components"] if (c.get("placement") or {}).get("from") == "kicad"}
     for c in spec["components"]:
         pl = c.get("placement") or {}
         fp = fps.get(c.get("ref"))
@@ -354,6 +422,9 @@ def _check_fixed(spec: dict, fps: dict, rep: Report, w: float, h: float) -> None
             continue
         x, y, r = float(pl["x_mm"]), float(pl["y_mm"]), float(pl.get("rotation") or 0)
         cx0, cy0, cx1, cy1 = fp.courtyard
+        bottom = on_bottom(c)
+        if bottom:                       # flipped: the footprint's y is mirrored before it is turned
+            cy0, cy1 = -cy1, -cy0
         court = _box([(x + px, y + py) for px, py in (_rot(cx0, cy0, r), _rot(cx1, cy0, r),
                                                        _rot(cx1, cy1, r), _rot(cx0, cy1, r))])
         pads = []
@@ -361,7 +432,7 @@ def _check_fixed(spec: dict, fps: dict, rep: Report, w: float, h: float) -> None
             if p.kind == "np_thru_hole":
                 continue
             rr = max(p.w, p.h) / 2
-            px, py = _rot(p.x, p.y, r)
+            px, py = _rot(p.x, -p.y if bottom else p.y, r)
             pads.append((x + px - rr, y + py - rr, x + px + rr, y + py + rr))
         poly = spec["board"].get("outline")
         if pads and poly:
@@ -382,6 +453,8 @@ def _check_fixed(spec: dict, fps: dict, rep: Report, w: float, h: float) -> None
             rep.warnings.append(f"{c['ref']}: its courtyard reaches well past the board edge "
                                 f"(x {court[0]:.1f}..{court[2]:.1f}, y {court[1]:.1f}..{court[3]:.1f} mm)")
         boxes.append((c["ref"], court))
+        sides[c["ref"]] = "both" if any(p.kind in ("thru_hole", "np_thru_hole") for p in fp.pads) else (
+            "bottom" if bottom else "top")
     mh = spec["board"].get("mounting_holes")
     if mh:
         rad = float(mh.get("diameter_mm", 3.2)) / 2 + 0.6
@@ -394,9 +467,15 @@ def _check_fixed(spec: dict, fps: dict, rep: Report, w: float, h: float) -> None
     for i in range(len(boxes)):
         for j in range(i + 1, len(boxes)):
             a, b = boxes[i], boxes[j]
+            sa, sb = sides.get(a[0], "both"), sides.get(b[0], "both")
+            if "both" not in (sa, sb) and sa != sb:
+                continue                 # one on each side of the board
             if a[0].startswith("mounting") and b[0].startswith("mounting"):
                 continue
             if _overlap(a[1], b[1]):
+                if a[0] in from_kicad and b[0] in from_kicad:
+                    rep.warnings.append(f"{a[0]} and {b[0]} overlap where they were placed in KiCad")
+                    continue
                 rep.errors.append(f"{a[0]} overlaps {b[0]}: move one of them (courtyards "
                                   f"{_fmt(a[1])} and {_fmt(b[1])} mm from the board's top-left corner)")
 

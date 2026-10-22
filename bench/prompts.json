@@ -1,0 +1,17 @@
+[
+ {"id": "blink555", "prompt": "A 555 timer LED blinker at about 1 Hz, powered from a 9 V battery clip. Through-hole friendly but SMD is fine."},
+ {"id": "usbc_led", "prompt": "A small USB-C powered board with a power LED and a user LED on a button. No microcontroller."},
+ {"id": "qwiic_rgb", "prompt": "A Qwiic I2C board that drives four RGB LEDs with a PCA9685, address jumpers, 3.3 V."},
+ {"id": "buck_5v", "prompt": "A 12 V to 5 V 2 A buck converter board with screw terminals in and out, reverse-polarity protection and a power LED."},
+ {"id": "usb_pd_12v", "prompt": "A USB-C Power Delivery trigger board that asks for 12 V and brings it out on a 2-pin terminal, with a power-good LED."},
+ {"id": "lipo_logger", "prompt": "A LiPo-powered ESP32-C3 temperature and humidity logger with an SHT40, USB-C charging, battery voltage measurement and deep sleep."},
+ {"id": "esp32s3_sensor", "prompt": "An ESP32-S3 sensor board with a BME280, a Qwiic connector, USB-C for power and programming, and a status LED. 4 layers if needed."},
+ {"id": "rp2040_dev", "prompt": "A minimal RP2040 development board with USB-C, 16 MB flash, BOOTSEL and RESET buttons, and all GPIO on 2.54 mm headers."},
+ {"id": "can_node", "prompt": "A CAN bus node: STM32G030 microcontroller, a CAN transceiver with a 120 ohm termination jumper, 12 V input with a 3.3 V regulator, and a 4-pin connector."},
+ {"id": "rs485_node", "prompt": "An RS-485 sensor node with an ESP32-C3, a half-duplex transceiver, termination and bias resistors, and 5-24 V input."},
+ {"id": "motor_driver", "prompt": "A dual DC motor driver board with a DRV8833, controlled by an RP2040, powered from a 2-cell LiPo, with USB-C for programming."},
+ {"id": "ethernet_node", "prompt": "An ESP32 board with 10/100 Ethernet using a LAN8720A and an RJ45 MagJack, powered from USB-C."},
+ {"id": "ble_beacon", "prompt": "A coin-cell nRF52840 BLE beacon with a button and an LED, as small as possible."},
+ {"id": "zigbee_sensor", "prompt": "An ESP32-C6 Zigbee door sensor with a reed switch input, a status LED and two AA batteries."},
+ {"id": "mic_preamp", "prompt": "An electret microphone preamp with an op-amp, 40 dB gain, single 5 V supply, and a 3.5 mm output jack."}
+]

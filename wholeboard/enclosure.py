@@ -53,7 +53,7 @@ SPEC_DOC = """{
     {"ref": "SW1", "shape": "rect", "width_mm": 9, "height_mm": 4},
     {"x_mm": 20, "y_mm": 10, "diameter_mm": 3, "note": "light pipe"}
   ],
-  "vents": {"lid": false, "sides": false},
+  "vents": {"lid": false, "sides": false},   # the build reports how warm the box gets; vents cool it
   "rubber_feet": false,                  # pockets under the base for 10 mm stick-on feet
   "mounting_ears": false,                # tabs with screw holes for fixing the box to a surface
   "label": {"text": "BLINKER", "size_mm": 6, "x_mm": null, "y_mm": null}   # engraved in the lid; null = centred
