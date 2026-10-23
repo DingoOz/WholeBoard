@@ -18,6 +18,7 @@ class Plot {
     this.ro = new ResizeObserver(() => this.draw());
     this.ro.observe(host);
     window.addEventListener("wb-theme", () => { this.makeLegend(); this.draw(); });
+    window.addEventListener("wb-zoom", () => this.draw());
     this.makeLegend();
   }
 
@@ -44,7 +45,7 @@ class Plot {
   tx(v) { return this.opts.logx ? Math.log10(Math.max(v, 1e-12)) : v; }
 
   draw(cursor) {
-    const c = this.canvas, dpr = window.devicePixelRatio || 1;
+    const c = this.canvas, dpr = (window.devicePixelRatio || 1) * wbZoom();
     const w = this.host.clientWidth || 600, h = this.opts.height || 260;
     c.width = w * dpr; c.height = h * dpr; c.style.width = w + "px"; c.style.height = h + "px";
     const g = c.getContext("2d");
@@ -89,7 +90,7 @@ class Plot {
 
   hover(e) {
     if (!this.map) return;
-    const r = this.canvas.getBoundingClientRect(), px = e.clientX - r.left;
+    const r = this.canvas.getBoundingClientRect(), px = (e.clientX - r.left) / wbZoom();
     const { xs, X } = this.map;
     let k = 0, best = Infinity;
     for (let i = 0; i < xs.length; i++) { const d = Math.abs(X(xs[i]) - px); if (d < best) { best = d; k = i; } }

@@ -85,6 +85,66 @@ WholeBoard should not design a mains-powered board without these checks.
 IPC-2152 (2009) replaces IPC-2221's current-carrying charts with measured data. It is less
 pessimistic for internal layers. Keep IPC-2221 as an option for comparison.
 
+### Antenna placement with the enclosure and other parts (M for the checks, L for simulation)
+
+Modules with an antenna (ESP32, nRF52840 and the like) already carry a copper keep-out, but nothing
+checks what is around the antenna once the board is placed and boxed. A tall connector, a battery,
+a screw boss or a metal case next to the antenna can cut the range badly, and the board still passes
+every other check.
+
+There is no single official rule for antenna keep-outs. Antenna and chip vendors publish their own
+guidance in application notes and module datasheets: a copper-free zone around the antenna, and a
+clearance of a few millimetres from plastic or metal. So the plan is to start from the vendor's
+numbers for the exact part, and then measure the match with a VNA inside the real enclosure. Rules
+and simulation pick the starting layout. The measurement is the final word.
+
+Rule-based checks first, using each vendor's own numbers:
+
+- Give each antenna-bearing footprint (module antennas, chip antennas, u.FL and SMA connectors) an
+  antenna region, the vendor's keep-out distances and the direction it should face, taken from the
+  module's datasheet, hardware design guide or the antenna maker's application note. Record the
+  source document and section with the numbers so they can be checked.
+- Keep separate clearances for plastic and for metal, because metal needs far more room. Plastic
+  close to the antenna lowers its resonant frequency. Metal close to it detunes the antenna and
+  blocks the signal.
+- Where the vendor publishes no figures, use a conservative generic keep-out. Label the result
+  "generic, not from the datasheet" so nobody mistakes it for the vendor's rule.
+- On the board: the antenna end at a board edge or overhanging it, no copper or pour under it, no
+  tall or metal parts (connectors, electrolytics, batteries, shields, displays) within the keep-out
+  or in front of the antenna, and enough ground plane on the module's side.
+- In the enclosure: the distance from the antenna to each wall, lid and floor; no screw bosses,
+  standoffs, heat-set inserts or metal fittings near it; a warning for a metal case (or an
+  aluminium case from *Fit to a case*) with the choice of a plastic window or an external antenna
+  on a u.FL-to-SMA bulkhead, which the enclosure generator can then cut a hole for.
+- Feed the rules back into the design: the designer and TraceMaker place the module with its
+  antenna outwards, and the enclosure generator keeps walls and bosses clear.
+- Show the keep-out as a volume in the board view and the 3D enclosure view, with each problem
+  marked where it is.
+
+Then measure it on the real board (bring-up guide):
+
+- Add a step to the bring-up guide for boards with an antenna: measure the return loss (S11) with a
+  VNA (a NanoVNA is enough) with the board fitted in its printed enclosure, lid closed, and again
+  outside it. Connect through the u.FL connector, or through a short pigtail soldered at the
+  antenna feed. Give the band to check (for example 2.400–2.4835 GHz) and the target, about −10 dB
+  or better across the band.
+- For chip antennas and antennas on a u.FL connector, the designer adds a pi matching network
+  (a 0 Ω series part and two unfitted shunt pads) so the antenna can be re-tuned for the enclosure.
+  Module antennas usually cannot be re-tuned. For those, a failed measurement means moving the
+  module, adding a plastic window or using an external antenna, and the guide says so.
+- Let the user enter the measured resonance and S11 so the report keeps them with the revision.
+
+Then simulation, on demand from the Sim Lab:
+
+- Model the antenna, the board's ground plane, nearby parts as metal blocks and the enclosure walls
+  as plastic (PLA, PETG, ABS) or metal, and solve it with openEMS (FDTD, GPL-3.0).
+- Report the shift in resonant frequency and the return loss (S11) with and without the enclosure,
+  and show the radiation pattern on the 3D model.
+- Module antennas are proprietary shapes, so use the maker's reference geometry where published and
+  a generic inverted-F or chip-antenna model otherwise. Present the results as a comparison between
+  layouts, not a prediction of range and not a replacement for the VNA measurement or for
+  certification testing.
+
 ## Manufacturing
 
 ### Panel files (M)

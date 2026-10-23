@@ -110,7 +110,8 @@ class Project:
     def summary(self) -> dict:
         s = self.state
         return {"id": s["id"], "title": s.get("title"), "status": s.get("status"),
-                "created": s.get("created"), "total": (s.get("quote") or {}).get("total")}
+                "created": s.get("created"), "total": (s.get("quote") or {}).get("total"),
+                "hidden": bool(s.get("hidden"))}
 
 
 class Manager:
@@ -164,3 +165,14 @@ class Manager:
     def list(self) -> list[dict]:
         return sorted((p.summary() for p in self.projects.values()),
                       key=lambda s: -(s.get("created") or 0))
+
+    def set_hidden(self, hidden: bool) -> int:
+        """Clear the boards list (or bring it back) without touching any board's files."""
+        n = 0
+        for p in list(self.projects.values()):
+            with p.lock:
+                if bool(p.state.get("hidden")) != hidden:
+                    p.state["hidden"] = hidden
+                    p.save()
+                    n += 1
+        return n

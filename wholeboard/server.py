@@ -173,6 +173,14 @@ def ai_models():
         return {"ok": False, "error": msg[:300]}
 
 
+@app.post("/api/ai/local-models")
+async def ai_local_models(request: Request):
+    """Search this computer for local model servers; body {url} adds the Server URL from the form."""
+    from .ai.providers import find_local_models
+    body = await request.json() if await request.body() else {}
+    return await asyncio.to_thread(find_local_models, body.get("url"))
+
+
 @app.post("/api/tools/freecad/fetch")
 async def fetch_freecad():
     lines: list[str] = []
@@ -214,6 +222,13 @@ async def fetch_libs(request: Request):
 @app.get("/api/projects")
 def list_projects():
     return mgr().list()
+
+
+@app.post("/api/projects/clear")
+async def clear_projects(request: Request):
+    """Hide every board from the list (restore=true shows them again). Nothing is deleted."""
+    body = await request.json() if await request.body() else {}
+    return {"changed": mgr().set_hidden(not body.get("restore"))}
 
 
 @app.post("/api/projects")

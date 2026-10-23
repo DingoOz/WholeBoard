@@ -28,6 +28,8 @@ class BoardView {
     this.ro.observe(host);
     this._onTheme = () => this.draw();
     window.addEventListener("wb-theme", this._onTheme);
+    this._onZoom = () => { this._resize(); this.draw(); };
+    window.addEventListener("wb-zoom", this._onZoom);
   }
 
   _buildBar() {
@@ -53,9 +55,9 @@ class BoardView {
   }
 
   _resize() {
-    const r = this.host.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    this.w = Math.max(100, r.width); this.h = Math.max(100, r.height);
+    // layout pixels; the backing store also covers the page zoom so it stays sharp
+    const dpr = (window.devicePixelRatio || 1) * wbZoom();
+    this.w = Math.max(100, this.host.clientWidth); this.h = Math.max(100, this.host.clientHeight);
     this.canvas.width = this.w * dpr; this.canvas.height = this.h * dpr;
     this.canvas.style.width = this.w + "px"; this.canvas.style.height = this.h + "px";
     this.dpr = dpr;
@@ -87,8 +89,8 @@ class BoardView {
     this.canvas.addEventListener("wheel", e => {
       e.preventDefault();
       const k = Math.exp(-e.deltaY * 0.0015);
-      const r = this.canvas.getBoundingClientRect();
-      const mx = e.clientX - r.left, my = e.clientY - r.top;
+      const r = this.canvas.getBoundingClientRect(), z = wbZoom();
+      const mx = (e.clientX - r.left) / z, my = (e.clientY - r.top) / z;
       this.ox = mx - (mx - this.ox) * k; this.oy = my - (my - this.oy) * k;
       this.scale *= k;
       this.draw();
@@ -97,13 +99,15 @@ class BoardView {
     this.canvas.addEventListener("pointerup", () => { drag = null; });
     this.canvas.addEventListener("pointermove", e => {
       if (drag) {
-        this.ox += e.clientX - drag[0]; this.oy += e.clientY - drag[1];
+        const z = wbZoom();
+        this.ox += (e.clientX - drag[0]) / z; this.oy += (e.clientY - drag[1]) / z;
         drag = [e.clientX, e.clientY];
         this.draw();
         return;
       }
-      const r = this.canvas.getBoundingClientRect();
-      this._hover((e.clientX - r.left - this.ox) / this.scale, (e.clientY - r.top - this.oy) / this.scale, e.clientX - r.left, e.clientY - r.top);
+      const r = this.canvas.getBoundingClientRect(), z = wbZoom();
+      const mx = (e.clientX - r.left) / z, my = (e.clientY - r.top) / z;
+      this._hover((mx - this.ox) / this.scale, (my - this.oy) / this.scale, mx, my);
     });
     this.canvas.addEventListener("pointerleave", () => { this.tip.style.display = "none"; });
   }
