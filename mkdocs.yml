@@ -121,6 +121,7 @@ nav:
       - The quote: reference/quote.md
       - MCP tools: reference/mcp-tools.md
       - Settings: reference/settings.md
+      - Colour themes: reference/themes.md
       - Command line: reference/cli.md
       - Files and folders: reference/files.md
       - Limits: reference/limits.md

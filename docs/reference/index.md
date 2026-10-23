@@ -15,6 +15,7 @@ time the site is built, so they match the version you are reading.
 | [The quote](quote.md) | What is live, what is estimated |
 | [MCP tools](mcp-tools.md) | The MCP server's tools and arguments *(generated)* |
 | [Settings](settings.md) | Every setting and its default *(generated)* |
+| [Colour themes](themes.md) | The eleven themes, with screenshots, and how to add one |
 | [Command line](cli.md) | `wholeboard`, `doctor`, `mcp`, `bench` |
 | [Files and folders](files.md) | Where things are saved |
 | [Limits](limits.md) | What WholeBoard does not do |
