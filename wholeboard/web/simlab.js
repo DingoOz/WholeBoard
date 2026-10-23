@@ -216,6 +216,8 @@ class SimLab {
     this.ro = new ResizeObserver(() => this._resize()); this.ro.observe(host);
     this._onTheme = () => { this.texDirty = true; };
     window.addEventListener("wb-theme", this._onTheme);
+    this._onZoom = () => this._resize();
+    window.addEventListener("wb-zoom", this._onZoom);
     this.t0 = performance.now();
     const loop = () => {
       if (!this.host.isConnected) { this.destroy(); return; }
@@ -229,6 +231,7 @@ class SimLab {
     cancelAnimationFrame(this.raf);
     this.ro?.disconnect();
     window.removeEventListener("wb-theme", this._onTheme);
+    window.removeEventListener("wb-zoom", this._onZoom);
     if (this.rec?.state === "recording") this.rec.stop();
   }
 
@@ -389,7 +392,7 @@ class SimLab {
     c.addEventListener("pointerdown", e => { drag = [e.clientX, e.clientY, e.button]; moved = 0; c.setPointerCapture(e.pointerId); this.anim = null; });
     c.addEventListener("pointermove", e => {
       if (!drag) { this.hover = this._pick(e); return; }
-      const dx = e.clientX - drag[0], dy = e.clientY - drag[1];
+      const dx = (e.clientX - drag[0]) / wbZoom(), dy = (e.clientY - drag[1]) / wbZoom();
       moved += Math.abs(dx) + Math.abs(dy);
       if (drag[2] === 2 || e.shiftKey) {        // pan
         const s = this.dist / this.H * 1.2, cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
@@ -435,8 +438,9 @@ class SimLab {
   _ySpan(p) { const t = this.scene.board.t, h = Math.max(0.3, p.h); return p.side === "bottom" ? [-t - h, -t] : [0, h]; }
 
   _resize() {
-    const r = this.host.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
-    this.W = Math.max(50, r.width); this.H = Math.max(50, r.height);
+    // layout pixels; the backing store also covers the page zoom so it stays sharp
+    const dpr = Math.min(3, Math.min(2, window.devicePixelRatio || 1) * wbZoom());
+    this.W = Math.max(50, this.host.clientWidth); this.H = Math.max(50, this.host.clientHeight);
     const [w, h] = this.forced || [this.W * dpr, this.H * dpr];
     for (const c of [this.gl3, this.over]) { c.width = w; c.height = h; }
     this.cw = w; this.ch = h; this.scale = this.forced ? 1.3 * h / 720 : dpr;

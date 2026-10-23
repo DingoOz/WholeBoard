@@ -148,7 +148,8 @@ async function tourShow(i, dir = 1) {
 function tourPlace() {
   const st = tourState;
   if (!st) return;
-  const t = st.target, pad = 6, vw = window.innerWidth, vh = window.innerHeight;
+  // positions are in layout pixels: the page may be zoomed
+  const t = st.target, pad = 6, z = wbZoom(), vw = window.innerWidth / z, vh = window.innerHeight / z;
   const pw = Math.min(360, vw - 24);
   st.pop.style.width = pw + "px";
   if (!t) {
@@ -156,7 +157,7 @@ function tourPlace() {
     st.pop.style.left = (vw - pw) / 2 + "px"; st.pop.style.top = vh / 3 + "px";
     return;
   }
-  const r = t.getBoundingClientRect();
+  const b = t.getBoundingClientRect(), r = { left: b.left / z, top: b.top / z, right: b.right / z, bottom: b.bottom / z };
   const x = Math.max(4, r.left - pad), y = Math.max(4, r.top - pad);
   const w = Math.min(vw - 8, r.right + pad) - x, h = Math.min(vh - 8, r.bottom + pad) - y;
   st.spot.style.cssText = `left:${x}px;top:${y}px;width:${w}px;height:${h}px`;

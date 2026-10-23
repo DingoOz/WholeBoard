@@ -212,6 +212,110 @@ def list_models(cfg: dict) -> list[str]:
     return sorted(m.id for m in client.models.list())
 
 
+# Where local OpenAI-compatible servers listen by default, on the computer running WholeBoard.
+LOCAL_SERVERS = [
+    ("Ollama", 11434), ("LM Studio", 1234), ("llama.cpp or Strata", 8080), ("vLLM", 8000), ("Jan", 1337),
+    ("KoboldCpp", 5001), ("text-generation-webui", 5000), ("GPT4All", 4891),
+]
+# owned_by values that name the server better than its port does (8080 is shared by several)
+_OWNERS = {"llamacpp": "llama.cpp", "vllm": "vLLM", "localai": "LocalAI", "koboldcpp": "KoboldCpp"}
+
+
+def _get_json(url: str, body: dict | None = None, timeout: float = 2.0) -> Any:
+    import urllib.request
+    req = urllib.request.Request(url, data=json.dumps(body).encode() if body else None,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def _gb(n: float | None) -> str | None:
+    return f"{n / 1e9:.1f} GB" if n else None
+
+
+def _ctx(n: int | None) -> str | None:
+    return f"{n // 1000}k context" if n else None
+
+
+def _probe(name: str, base: str) -> list[dict]:
+    """The chat models one server offers, or [] if nothing answers there."""
+    root = base[:-3] if base.endswith("/v1") else base
+    models: list[dict] = []
+    if name == "Ollama":
+        try:
+            tags = _get_json(root + "/api/tags")["models"]
+        except Exception:  # noqa: BLE001 - not Ollama after all; try the OpenAI route below
+            tags = None
+        if tags is not None:
+            for t in tags[:60]:
+                d = t.get("details") or {}
+                try:
+                    caps = _get_json(root + "/api/show", {"model": t["name"]}).get("capabilities")
+                except Exception:  # noqa: BLE001
+                    caps = None
+                if caps and "completion" not in caps:
+                    continue                                  # embedding-only model
+                models.append({"model": t["name"], "tools": ("tools" in caps) if caps else None,
+                               "detail": " · ".join(x for x in (d.get("parameter_size"), d.get("quantization_level"),
+                                                                 _gb(t.get("size"))) if x)})
+            return [{"server": name, "base_url": base, **m} for m in models]
+    if name == "LM Studio":
+        try:
+            for m in _get_json(root + "/api/v0/models")["data"]:
+                if m.get("type") == "embeddings":
+                    continue
+                caps = m.get("capabilities")
+                models.append({"model": m["id"], "tools": ("tool_use" in caps) if caps is not None else None,
+                               "detail": " · ".join(x for x in (m.get("quantization"), _ctx(m.get("max_context_length")),
+                                                                 m.get("state")) if x)})
+            return [{"server": name, "base_url": base, **m} for m in models]
+        except Exception:  # noqa: BLE001 - older LM Studio: plain OpenAI route
+            pass
+    try:
+        data = _get_json(base + "/models")["data"]
+    except Exception:  # noqa: BLE001 - nothing listening, or not an OpenAI-compatible server
+        return []
+    # Name the server only when it says what it is: a port alone can be anything (a proxy, say).
+    where, tools = base.split("//", 1)[-1].removesuffix("/v1"), None
+    try:
+        # llama.cpp's /props; Strata (stratallm.org) serves the same shape and names itself in build_info
+        props = _get_json(root + "/props")
+        if "default_generation_settings" in props:
+            build = str(props.get("build_info") or "")
+            where = build if build.lower().startswith("strata") else "llama.cpp"
+            caps = props.get("chat_template_caps")
+            if isinstance(caps, dict) and "supports_tool_calls" in caps:
+                tools = bool(caps["supports_tool_calls"])
+            elif props.get("chat_template"):            # a template that never mentions tools cannot take them
+                tools = "tools" in props["chat_template"]
+    except Exception:  # noqa: BLE001 - not llama.cpp; Strata still answers /health
+        try:
+            if str(_get_json(root + "/health").get("service", "")).lower() == "strata":
+                where = "Strata"
+        except Exception:  # noqa: BLE001
+            pass
+    for m in data:
+        if re.search(r"embed", m.get("id", ""), re.I):
+            continue
+        status = m.get("status")
+        detail = [_ctx((m.get("meta") or {}).get("n_ctx")), status.get("value") if isinstance(status, dict) else None]
+        models.append({"server": _OWNERS.get(str(m.get("owned_by", "")).lower(), where), "base_url": base,
+                       "model": m["id"], "tools": tools, "detail": " · ".join(x for x in detail if x)})
+    return models
+
+
+def find_local_models(extra_url: str | None = None) -> dict:
+    """Look for local model servers on their usual ports (and at extra_url) and list their chat models."""
+    from concurrent.futures import ThreadPoolExecutor
+    targets = [(n, f"http://localhost:{port}/v1") for n, port in LOCAL_SERVERS]
+    extra = (extra_url or "").strip().rstrip("/")
+    if extra.startswith("http://") and extra not in {b for _, b in targets}:
+        targets.insert(0, ("Ollama" if ":11434" in extra else "LM Studio" if ":1234" in extra else "Server", extra))
+    with ThreadPoolExecutor(len(targets)) as pool:
+        found = list(pool.map(lambda t: _probe(*t), targets))
+    return {"models": [m for ms in found for m in ms], "checked": [b for _, b in targets]}
+
+
 class OpenAISession:
     def __init__(self, cfg: dict, system: str, tools: list[dict]):
         import openai

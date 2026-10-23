@@ -73,10 +73,14 @@ function renderExamples() {
 // ------------------------------------------------------------------ projects
 async function loadProjects() {
   S.projects = await api("/api/projects");
+  const shown = S.projects.filter(p => !p.hidden), cleared = S.projects.length - shown.length;
   const ul = $("#projectList");
   ul.innerHTML = "";
-  if (!S.projects.length) ul.append(el("li", { class: "muted" }, "No boards yet"));
-  for (const p of S.projects) {
+  if (!shown.length) ul.append(el("li", { class: "muted" }, cleared ? "List cleared" : "No boards yet"));
+  $("#clearListBtn").hidden = !shown.length;
+  $("#restoreListBtn").hidden = !cleared;
+  $("#restoreListBtn").textContent = `Show ${cleared} cleared board${cleared === 1 ? "" : "s"}`;
+  for (const p of shown) {
     ul.append(el("li", { class: p.id === S.pid ? "on" : "", onclick: () => openProject(p.id) },
       el("span", { class: "t", title: p.title }, p.title),
       el("span", { class: "s" }, el("span", {}, p.status || ""), el("span", {}, p.total ? money(p.total) : ""))));
@@ -1141,18 +1145,18 @@ function zoomable(box, img) {
   let s = 1, x = 0, y = 0, drag = null;
   const apply = () => img.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
   img.onload = () => {
-    const r = box.getBoundingClientRect();
-    s = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight) * 0.95 || 1;
-    x = (r.width - img.naturalWidth * s) / 2; y = (r.height - img.naturalHeight * s) / 2; apply();
+    const w = box.clientWidth, h = box.clientHeight;
+    s = Math.min(w / img.naturalWidth, h / img.naturalHeight) * 0.95 || 1;
+    x = (w - img.naturalWidth * s) / 2; y = (h - img.naturalHeight * s) / 2; apply();
   };
   box.addEventListener("wheel", e => {
     e.preventDefault();
-    const r = box.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, k = Math.exp(-e.deltaY * 0.0015);
+    const r = box.getBoundingClientRect(), z = wbZoom(), mx = (e.clientX - r.left) / z, my = (e.clientY - r.top) / z, k = Math.exp(-e.deltaY * 0.0015);
     x = mx - (mx - x) * k; y = my - (my - y) * k; s *= k; apply();
   }, { passive: false });
   box.addEventListener("pointerdown", e => { drag = [e.clientX, e.clientY]; box.setPointerCapture(e.pointerId); });
   box.addEventListener("pointerup", () => drag = null);
-  box.addEventListener("pointermove", e => { if (!drag) return; x += e.clientX - drag[0]; y += e.clientY - drag[1]; drag = [e.clientX, e.clientY]; apply(); });
+  box.addEventListener("pointermove", e => { if (!drag) return; const z = wbZoom(); x += (e.clientX - drag[0]) / z; y += (e.clientY - drag[1]) / z; drag = [e.clientX, e.clientY]; apply(); });
 }
 
 // ------------------------------------------------------------------ settings
@@ -1164,6 +1168,7 @@ async function openSettings() {
     if (input.type === "checkbox") input.checked = !!v; else input.value = v ?? "";
   }
   syncShow();
+  $("#localModels").hidden = true; $("#findLocalOut").textContent = "";
   $("#settings").showModal();
 }
 
@@ -1188,6 +1193,57 @@ async function saveSettings() {
   await api("/api/config", { method: "POST", body: patch });
   $("#settings").close();
   await loadStatus(true);
+}
+
+// Search the computer running WholeBoard for local model servers and offer each chat model.
+async function findLocalModels() {
+  const form = $("#settingsForm"), out = $("#findLocalOut"), box = $("#localModels"), btn = $("#findLocalBtn");
+  const field = n => form.querySelector(`[name="ai.${n}"]`);
+  out.textContent = "";
+  btn.disabled = true; btn.classList.add("busy"); btn.setAttribute("aria-busy", "true");
+  btn.replaceChildren(el("span", { class: "spinner" }), "Searching…");
+  box.hidden = false;
+  box.replaceChildren(el("div", { class: "lm searching", role: "status" }, el("span", { class: "spinner" }),
+    "Looking for Ollama, LM Studio, llama.cpp, Strata, vLLM, Jan and other model servers on the computer running WholeBoard…"));
+  let r;
+  try {
+    // keep the spinner up long enough to be seen when every server answers at once
+    [r] = await Promise.all([api("/api/ai/local-models", { method: "POST", body: { url: field("openai_base_url").value } }),
+                             new Promise(ok => setTimeout(ok, 500))]);
+  } catch (e) { box.hidden = true; out.textContent = "✗ " + e.message; return; }
+  finally {
+    btn.disabled = false; btn.classList.remove("busy"); btn.removeAttribute("aria-busy");
+    btn.textContent = "Search again";
+  }
+  box.innerHTML = "";
+  box.hidden = !r.models.length;
+  if (!r.models.length) {
+    out.textContent = "No local models found. Start Ollama, LM Studio or llama.cpp on the computer running WholeBoard, "
+      + "or type its Server URL below, then search again.";
+    return;
+  }
+  const servers = new Set(r.models.map(m => m.base_url)).size;
+  out.textContent = `Found ${r.models.length} model${r.models.length === 1 ? "" : "s"} on ${servers} server${servers === 1 ? "" : "s"}.`;
+  const current = field("provider").value === "openai" ? [field("openai_base_url").value, field("openai_model").value] : [];
+  for (const m of r.models) {
+    const tools = m.tools === true ? el("span", { class: "chip ok", title: "The model supports tool calling" }, "tools")
+      : m.tools === false ? el("span", { class: "chip warn", title: "WholeBoard needs tool calling; this model may not design boards" }, "no tools") : "";
+    const row = el("div", { class: "lm" + (current[0] === m.base_url && current[1] === m.model ? " on" : "") },
+      el("div", { class: "n" }, el("b", { title: m.model }, m.model), el("span", {}, [m.server, m.detail].filter(Boolean).join(" · "))),
+      tools,
+      el("button", { class: "btn", type: "button", onclick: () => {
+        field("provider").value = "openai";
+        field("openai_base_url").value = m.base_url;
+        field("openai_model").value = m.model;
+        field("openai_price_in").value = 0; field("openai_price_out").value = 0;   // local models cost nothing per token
+        const dl = $("#openaiModels"); dl.innerHTML = "";
+        for (const x of r.models.filter(x => x.base_url === m.base_url)) dl.append(el("option", { value: x.model }));
+        syncShow();
+        box.querySelectorAll(".lm").forEach(x => x.classList.toggle("on", x === row));
+        out.textContent = `Using ${m.model} on ${m.server}. Click Save, then Test connection.`;
+      } }, "Use"));
+    box.append(row);
+  }
 }
 
 // ------------------------------------------------------------------ wiring
@@ -1222,6 +1278,7 @@ function init() {
       ? `Paste your ${b.textContent} API key, click Save, then List models.`
       : `Start ${b.textContent} on this computer, click Save, then List models.`;
   });
+  $("#findLocalBtn").onclick = () => findLocalModels();
   document.querySelectorAll("[data-list-models]").forEach(b => b.onclick = async () => {
     const out = $("#modelsOut");
     out.textContent = "Saving and asking the provider for its models…";
@@ -1334,6 +1391,12 @@ function init() {
     try { await api(`/api/projects/${S.pid}/outline`, { method: "POST", body: { name: file.name, data: btoa(bin) } }); }
     catch (e) { alert(e.message); }
   };
+  $("#clearListBtn").onclick = async () => {
+    if (!confirm("Clear the boards list? The boards and their files stay on disk, and you can show them again.")) return;
+    await api("/api/projects/clear", { method: "POST", body: {} });
+    loadProjects();
+  };
+  $("#restoreListBtn").onclick = async () => { await api("/api/projects/clear", { method: "POST", body: { restore: true } }); loadProjects(); };
   $("#stopBtn").onclick = () => api(`/api/projects/${S.pid}/cancel`, { method: "POST" });
   $("#deleteBtn").onclick = async () => {
     if (!confirm("Delete this board and all its files? This cannot be undone.")) return;
@@ -1383,4 +1446,62 @@ init();
   sel.value = cur;
   apply(cur);
   sel.addEventListener("change", () => apply(sel.value));
+})();
+
+// ---- zoom the whole interface
+(function zoom() {
+  const steps = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+  const label = $("#zoomReset");
+  const apply = z => {
+    document.documentElement.style.zoom = z === 1 ? "" : z;
+    label.textContent = Math.round(z * 100) + "%";
+    $("#zoomOut").disabled = z <= steps[0]; $("#zoomIn").disabled = z >= steps[steps.length - 1];
+    try { localStorage.setItem("wb-zoom", z); } catch (e) { /* storage blocked */ }
+    window.dispatchEvent(new Event("wb-zoom"));   // canvases re-size their backing stores
+    window.dispatchEvent(new Event("resize"));    // and the tour re-places its spotlight
+  };
+  const step = dir => {
+    const z = wbZoom();
+    apply(dir > 0 ? (steps.find(s => s > z + 1e-3) ?? z) : ([...steps].reverse().find(s => s < z - 1e-3) ?? z));
+  };
+  $("#zoomIn").onclick = () => step(1);
+  $("#zoomOut").onclick = () => step(-1);
+  label.onclick = () => apply(1);
+  // Ctrl+Alt with + / - / 0, so the browser's own zoom keys still work
+  window.addEventListener("keydown", e => {
+    if (!e.ctrlKey || !e.altKey) return;
+    if (e.key === "=" || e.key === "+") step(1);
+    else if (e.key === "-") step(-1);
+    else if (e.key === "0") apply(1);
+    else return;
+    e.preventDefault();
+  });
+  apply(wbZoom());
+})();
+
+// ---- drag handles that resize the prompt and message boxes
+(function resizers() {
+  for (const grip of document.querySelectorAll(".resize-grip")) {
+    const ta = document.getElementById(grip.dataset.for), key = ta.dataset.resize, up = grip.hasAttribute("data-up");
+    try { const h = parseFloat(localStorage.getItem(key)); if (h > 0) ta.style.height = h + "px"; } catch (e) { /* storage blocked */ }
+    let start = null;
+    grip.addEventListener("pointerdown", e => {
+      start = [e.clientY, ta.getBoundingClientRect().height / wbZoom()];
+      grip.setPointerCapture(e.pointerId); grip.classList.add("drag"); e.preventDefault();
+    });
+    grip.addEventListener("pointermove", e => {
+      if (!start) return;
+      const dy = (e.clientY - start[0]) / wbZoom();
+      const max = window.innerHeight / wbZoom() * 0.7;
+      ta.style.height = Math.max(36, Math.min(max, start[1] + (up ? -dy : dy))) + "px";
+    });
+    const end = () => {
+      if (!start) return;
+      start = null; grip.classList.remove("drag");
+      try { localStorage.setItem(key, parseFloat(ta.style.height)); } catch (e) { /* storage blocked */ }
+    };
+    grip.addEventListener("pointerup", end);
+    grip.addEventListener("pointercancel", end);
+    grip.addEventListener("dblclick", () => { ta.style.height = ""; try { localStorage.removeItem(key); } catch (e) { /* storage blocked */ } });
+  }
 })();

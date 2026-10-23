@@ -9,6 +9,14 @@ WholeBoard has no releases yet, so changes are grouped by date.
 
 - Documentation site (MkDocs Material) with tutorials, how-to guides, generated reference pages, explanation,
   standards and sources, and decision records. Published to GitHub Pages.
+- Clear the boards list without deleting any boards, and show the cleared boards again.
+- Zoom the whole interface from the top bar (50–200 %, also Ctrl+Alt with + / − / 0).
+- Drag handles to resize the board description and chat message boxes.
+- Search for local models in Settings: finds Ollama, LM Studio, llama.cpp, Strata, vLLM, Jan and other
+  OpenAI-compatible servers on the computer running WholeBoard, shows each chat model with its size, context
+  and tool-calling support, and fills in the settings for the one picked.
+- Roadmap: antenna keep-outs taken from each vendor's guidance, with separate plastic and metal clearances, then
+  checked with a VNA in the real enclosure.
 
 ## 2026-10-22
 

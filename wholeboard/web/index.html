@@ -7,7 +7,10 @@
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/themes.css">
-<script>try { const t = localStorage.getItem("wb-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
+<script>try { const t = localStorage.getItem("wb-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+try { const z = parseFloat(localStorage.getItem("wb-zoom")); if (z > 0) document.documentElement.style.zoom = z; } catch (e) {}
+// CSS zoom on the page: client and layout pixels differ by this factor
+window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</script>
 </head>
 <body>
 <header class="topbar">
@@ -29,6 +32,11 @@
       <option value="arctic">Arctic (light)</option>
     </select>
   </label>
+  <div class="zoom-pick" title="Zoom the whole interface">
+    <button class="btn ghost" id="zoomOut" type="button" title="Zoom out">−</button>
+    <button class="btn ghost" id="zoomReset" type="button" title="Back to 100 %">100%</button>
+    <button class="btn ghost" id="zoomIn" type="button" title="Zoom in">+</button>
+  </div>
   <button class="btn ghost" id="newBtn" type="button">+ New board</button>
   <button class="btn ghost" id="tourBtn" type="button" title="A short walk through designing a board with WholeBoard">? Take a tour</button>
   <button class="btn ghost" id="settingsBtn" type="button">⚙ Settings</button>
@@ -36,8 +44,10 @@
 
 <div class="layout">
   <aside class="sidebar">
-    <h3>Boards</h3>
+    <div class="side-head"><h3>Boards</h3>
+      <button class="link-btn" id="clearListBtn" type="button" title="Empty this list. The boards and their files stay on disk.">Clear</button></div>
     <ul id="projectList" class="project-list"></ul>
+    <button class="link-btn" id="restoreListBtn" type="button" hidden></button>
   </aside>
 
   <main>
@@ -48,7 +58,8 @@
           description. It asks you what it needs to know, prices the build at JLCPCB and designs a
           3D-printable enclosure.</p>
         <form id="promptForm" class="prompt">
-          <textarea id="prompt" rows="5" placeholder="For example: A small USB-C powered board with an ESP32-C3, a BME280 sensor on I²C, two status LEDs and a 4-pin header for a fan. About 40 × 30 mm."></textarea>
+          <textarea id="prompt" rows="5" data-resize="wb-prompt-h" placeholder="For example: A small USB-C powered board with an ESP32-C3, a BME280 sensor on I²C, two status LEDs and a 4-pin header for a fan. About 40 × 30 mm."></textarea>
+          <div class="resize-grip" data-for="prompt" title="Drag to resize the description box (double-click to reset)"></div>
           <div class="prompt-row">
             <div class="examples" id="examples"></div>
             <label class="btn" for="importFile" title="Start from an existing KiCad schematic and board: pick the .kicad_sch (and .kicad_pcb) files, or a zip of the project folder">Import KiCad project…</label>
@@ -76,8 +87,9 @@
       <div class="ws-body">
         <div class="chat-pane">
           <div id="chat" class="chat"></div>
+          <div class="resize-grip" data-for="chatInput" data-up title="Drag to resize the message box (double-click to reset)"></div>
           <form id="chatForm" class="chat-form">
-            <textarea id="chatInput" rows="2" placeholder="Message the designer… (Enter to send, Shift+Enter for a new line)"></textarea>
+            <textarea id="chatInput" rows="2" data-resize="wb-chat-h" placeholder="Message the designer… (Enter to send, Shift+Enter for a new line)"></textarea>
             <button class="btn primary" type="submit">Send</button>
           </form>
         </div>
@@ -110,6 +122,11 @@
           <option value="openai">OpenAI-compatible (local: Ollama, LM Studio, llama.cpp · or cloud)</option>
         </select>
       </label>
+      <div class="presets">
+        <button class="btn" type="button" id="findLocalBtn" title="Look for Ollama, LM Studio, llama.cpp, Strata, vLLM, Jan and other servers on the computer running WholeBoard">Search for local models</button>
+        <span class="muted" id="findLocalOut"></span>
+      </div>
+      <div id="localModels" class="local-models" hidden></div>
       <div data-show="ai.provider=anthropic">
         <label>Anthropic API key <input name="ai.anthropic_api_key" type="password" autocomplete="off" placeholder="sk-ant-… (or set ANTHROPIC_API_KEY)"></label>
         <label>Model <span class="with-btn"><input name="ai.anthropic_model" list="claudeModels"><button class="btn" type="button" data-list-models="claudeModels">List models</button></span></label>

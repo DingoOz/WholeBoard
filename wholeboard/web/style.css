@@ -44,8 +44,18 @@ button.chip { cursor: pointer; }
 
 .layout { flex: 1; display: flex; min-height: 0; }
 .sidebar { width: 230px; border-right: 1px solid var(--line); background: var(--panel); padding: 14px 10px; overflow: auto; }
-.sidebar h3 { margin: 4px 8px 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.side-head { display: flex; align-items: baseline; justify-content: space-between; margin: 4px 8px 10px; }
+.sidebar h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .project-list { list-style: none; margin: 0; padding: 0; }
+.link-btn { border: 0; background: none; padding: 2px 4px; color: var(--muted); font-size: 12px; cursor: pointer; border-radius: 4px; }
+.link-btn:hover { color: var(--accent); text-decoration: underline; }
+#restoreListBtn { margin: 8px 6px 0; }
+.zoom-pick { display: flex; align-items: center; }
+.zoom-pick .btn { padding: 7px 9px; }
+#zoomReset { min-width: 4.2em; font-variant-numeric: tabular-nums; }
+.resize-grip { height: 10px; cursor: ns-resize; touch-action: none; display: flex; align-items: center; justify-content: center; flex: none; }
+.resize-grip::before { content: ""; width: 40px; height: 4px; border-radius: 2px; background: var(--line); }
+.resize-grip:hover::before, .resize-grip.drag::before { background: var(--accent); }
 .project-list li { padding: 8px 10px; border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
 .project-list li:hover { background: var(--panel-2); }
 .project-list li.on { background: var(--panel-2); outline: 1px solid var(--line); }
@@ -58,7 +68,7 @@ main { flex: 1; min-width: 0; display: flex; }
 .hero h1 { font-size: 30px; line-height: 1.2; margin: 0 0 10px; }
 .hero p { color: var(--muted); margin: 0 0 20px; font-size: 15px; }
 .prompt { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; box-shadow: var(--shadow); }
-.prompt textarea { width: 100%; border: 0; background: transparent; resize: vertical; outline: none; font-size: 15px; }
+.prompt textarea { width: 100%; border: 0; background: transparent; resize: none; min-height: 3em; outline: none; font-size: 15px; }
 .prompt-row { display: flex; gap: 12px; align-items: flex-end; justify-content: space-between; }
 .examples { display: flex; gap: 6px; flex-wrap: wrap; }
 .examples button { cursor: pointer; }
@@ -100,7 +110,8 @@ main { flex: 1; min-width: 0; display: flex; }
 .question .ans { font-size: 13px; color: var(--accent); font-weight: 600; }
 .finish { border: 1px solid var(--ok); border-radius: 12px; padding: 12px; background: color-mix(in srgb, var(--ok) 8%, var(--panel)); white-space: pre-wrap; }
 .finish b { display: block; margin-bottom: 4px; color: var(--ok); }
-.chat-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+.chat-form { display: flex; gap: 8px; padding: 0 10px 10px; }
+.chat-pane > .resize-grip { border-top: 1px solid var(--line); }
 .chat-form textarea { flex: 1; resize: none; border-radius: 10px; border: 1px solid var(--line); padding: 8px 10px; background: var(--bg); outline: none; }
 
 .stage-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -231,6 +242,18 @@ ul.list-err, ul.list-warn { margin: 6px 0; padding-left: 20px; }
 
 .presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
 .presets .btn { padding: 4px 10px; font-size: 12.5px; }
+.local-models { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; max-height: 260px; overflow: auto; }
+.local-models .lm { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.local-models .lm:last-child { border-bottom: 0; }
+.local-models .lm.on { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+.local-models .lm .n { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.local-models .lm .n b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-models .lm .n span { font-size: 12px; color: var(--muted); }
+.local-models .lm .btn { padding: 4px 12px; font-size: 12.5px; }
+.local-models .lm.searching { color: var(--muted); padding: 12px 10px; }
+.spinner { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 2px solid var(--accent); border-top-color: transparent; animation: spin 0.9s linear infinite; }
+.btn.busy { display: inline-flex; align-items: center; gap: 8px; }
+.btn.busy .spinner { width: 12px; height: 12px; }
 .with-btn { display: flex; gap: 6px; }
 .with-btn input { flex: 1; min-width: 0; }
 details.help { margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }

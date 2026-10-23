@@ -153,6 +153,55 @@ def test_middleware_guards_remote_clients(own_config):
         auth.set_password(None)
 
 
+def test_clearing_the_boards_list_keeps_the_files(own_config, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from wholeboard import project, server
+    monkeypatch.setattr(config, "load", lambda: {"projects_dir": str(tmp_path / "boards")})
+    monkeypatch.setattr(server, "manager", project.Manager())
+    p = server.mgr().create("A blinker")
+    c = TestClient(server.app)
+    assert c.post("/api/projects/clear", json={}).json()["changed"] == 1
+    assert [b["hidden"] for b in c.get("/api/projects").json()] == [True]
+    assert (p.root / "state.json").exists() and project.Manager().list()[0]["hidden"]   # survives a restart
+    assert c.post("/api/projects/clear", json={"restore": True}).json()["changed"] == 1
+    assert not c.get("/api/projects").json()[0]["hidden"]
+
+
+def test_local_model_search_reads_each_server(monkeypatch):
+    from wholeboard.ai import providers
+    replies = {
+        "http://localhost:11434/api/tags": {"models": [
+            {"name": "qwen3:32b", "size": 20e9, "details": {"parameter_size": "32.8B", "quantization_level": "Q4_K_M"}},
+            {"name": "nomic-embed-text", "size": 2.7e8, "details": {}}]},
+        "http://localhost:8080/v1/models": {"data": [{"id": "gemma", "meta": {"n_ctx": 32768}}]},
+        "http://localhost:8080/props": {"default_generation_settings": {}, "chat_template": "{{ messages }}"},
+        "http://localhost:8000/v1/models": {"data": [{"id": "llama-3", "owned_by": "vllm"}, {"id": "bge-embed"}]},
+    }
+
+    def fake(url, body=None, timeout=2.0):
+        if url.endswith("/api/show"):
+            return {"capabilities": ["embedding"] if "embed" in body["model"] else ["completion", "tools"]}
+        if url not in replies:
+            raise OSError("connection refused")
+        return replies[url]
+    monkeypatch.setattr(providers, "_get_json", fake)
+    got = {(m["server"], m["model"]): m for m in providers.find_local_models()["models"]}
+    assert set(got) == {("Ollama", "qwen3:32b"), ("llama.cpp", "gemma"), ("vLLM", "llama-3")}   # no embedding models
+    assert got["Ollama", "qwen3:32b"]["tools"] is True and got["Ollama", "qwen3:32b"]["detail"] == "32.8B · Q4_K_M · 20.0 GB"
+    assert got["llama.cpp", "gemma"]["tools"] is False and got["llama.cpp", "gemma"]["detail"] == "32k context"
+    assert got["vLLM", "llama-3"]["base_url"] == "http://localhost:8000/v1" and got["vLLM", "llama-3"]["tools"] is None
+    assert providers.find_local_models("http://10.0.0.5:9000/v1/")["checked"][0] == "http://10.0.0.5:9000/v1"
+    # Strata (stratallm.org) copies llama.cpp's /props but names itself, and states tool support outright
+    replies["http://localhost:8080/props"] = {"default_generation_settings": {}, "build_info": "Strata 0.1.47",
+                                              "chat_template": "{{ messages }}",
+                                              "chat_template_caps": {"supports_tool_calls": True}}
+    replies["http://localhost:1337/v1/models"] = {"data": [{"id": "qwen"}]}
+    replies["http://localhost:1337/health"] = {"status": "ok", "service": "strata"}
+    got = {m["base_url"]: m for m in providers.find_local_models()["models"]}
+    assert got["http://localhost:8080/v1"]["server"] == "Strata 0.1.47" and got["http://localhost:8080/v1"]["tools"] is True
+    assert got["http://localhost:1337/v1"]["server"] == "Strata"
+
+
 # ---------------------------------------------------------------- panel, print, usage
 def test_panel_suggested_when_cheaper():
     from wholeboard.jlc import quote

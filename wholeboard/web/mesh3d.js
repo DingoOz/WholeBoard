@@ -21,6 +21,8 @@ class MeshView {
     this.ro.observe(host);
     this._onTheme = () => this.draw();
     window.addEventListener("wb-theme", this._onTheme);
+    this._onZoom = () => this._resize();
+    window.addEventListener("wb-zoom", this._onZoom);
   }
 
   _prep(m) {
@@ -40,12 +42,12 @@ class MeshView {
   }
 
   _resize() {
-    const r = this.host.getBoundingClientRect();
-    this.dpr = window.devicePixelRatio || 1;
-    this.w = r.width; this.h = r.height;
-    this.canvas.width = Math.max(1, r.width * this.dpr);
-    this.canvas.height = Math.max(1, r.height * this.dpr);
-    this.canvas.style.width = r.width + "px"; this.canvas.style.height = r.height + "px";
+    // layout pixels; the backing store also covers the page zoom so it stays sharp
+    this.dpr = (window.devicePixelRatio || 1) * wbZoom();
+    this.w = this.host.clientWidth; this.h = this.host.clientHeight;
+    this.canvas.width = Math.max(1, this.w * this.dpr);
+    this.canvas.height = Math.max(1, this.h * this.dpr);
+    this.canvas.style.width = this.w + "px"; this.canvas.style.height = this.h + "px";
     this.draw();
   }
 
