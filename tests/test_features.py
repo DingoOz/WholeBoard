@@ -202,6 +202,45 @@ def test_local_model_search_reads_each_server(monkeypatch):
     assert got["http://localhost:1337/v1"]["server"] == "Strata"
 
 
+def test_lan_search_scans_this_computers_subnet(monkeypatch):
+    import asyncio
+    import socket
+    from wholeboard.ai import providers
+    monkeypatch.setattr(providers, "lan_addresses", lambda: ["192.168.1.83", "10.4.0.7", "172.20.9.1"])
+    monkeypatch.setattr(providers, "_prefix_lengths", lambda: {"192.168.1.83": 24, "10.4.0.7": 16})
+    nets = {str(n["network"]): n["whole"] for n in providers.lan_networks()}
+    # a /16 is narrowed to the /24 around us; an address of unknown size gets a /24
+    assert nets == {"192.168.1.0/24": None, "10.4.0.0/24": "10.4.0.0/16", "172.20.9.0/24": None}
+
+    monkeypatch.setattr(providers, "lan_addresses", lambda: ["192.168.1.83"])
+    real_ports, scanned = providers._open_ports, []
+
+    async def fake_ports(hosts, ports):
+        scanned.extend(hosts)
+        return [("192.168.1.16", 11434), ("192.168.1.1", 8080)]          # Ollama, and a router's web page
+    monkeypatch.setattr(providers, "_open_ports", fake_ports)
+
+    def fake_json(url, body=None, timeout=2.0):
+        if url == "http://192.168.1.16:11434/api/tags":
+            return {"models": [{"name": "qwen3.5:9b", "size": 6.6e9, "details": {}}]}
+        if url.endswith("/api/show"):
+            return {"capabilities": ["completion", "tools"]}
+        raise OSError("not a model server")
+    monkeypatch.setattr(providers, "_get_json", fake_json)
+    r = providers.find_lan_models()
+    assert len(scanned) == 253 and "192.168.1.83" not in scanned                # 254 hosts less this computer
+    assert [(m["server"], m["base_url"], m["tools"]) for m in r["models"]] == \
+        [("Ollama on 192.168.1.16", "http://192.168.1.16:11434/v1", True)]
+    assert r["networks"] == [{"network": "192.168.1.0/24", "whole": None}] and r["open"] == 2
+
+    with socket.socket() as srv:                                                  # the real port check
+        srv.bind(("127.0.0.1", 0)); srv.listen()
+        port = srv.getsockname()[1]
+        with socket.socket() as free:
+            free.bind(("127.0.0.1", 0)); closed = free.getsockname()[1]
+        assert asyncio.run(real_ports(["127.0.0.1"], [port, closed])) == [("127.0.0.1", port)]
+
+
 # ---------------------------------------------------------------- panel, print, usage
 def test_panel_suggested_when_cheaper():
     from wholeboard.jlc import quote

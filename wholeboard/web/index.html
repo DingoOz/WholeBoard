@@ -124,6 +124,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
       </label>
       <div class="presets">
         <button class="btn" type="button" id="findLocalBtn" title="Look for Ollama, LM Studio, llama.cpp, Strata, vLLM, Jan and other servers on the computer running WholeBoard">Search for local models</button>
+        <button class="btn" type="button" id="findLanBtn" title="Look for model servers on the other computers in this computer's subnet">Search the LAN</button>
         <span class="muted" id="findLocalOut"></span>
       </div>
       <div id="localModels" class="local-models" hidden></div>
