@@ -181,6 +181,21 @@ async def ai_local_models(request: Request):
     return await asyncio.to_thread(find_local_models, body.get("url"))
 
 
+_lan_search = threading.Lock()
+
+
+@app.post("/api/ai/lan-models")
+async def ai_lan_models():
+    """Search the subnet this computer is on for model servers on other computers."""
+    from .ai.providers import find_lan_models
+    if not _lan_search.acquire(blocking=False):
+        raise HTTPException(409, "a LAN search is already running")
+    try:
+        return await asyncio.to_thread(find_lan_models)
+    finally:
+        _lan_search.release()
+
+
 @app.post("/api/tools/freecad/fetch")
 async def fetch_freecad():
     lines: list[str] = []

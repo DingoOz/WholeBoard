@@ -11,6 +11,7 @@ appends to it.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from dataclasses import dataclass, field
@@ -314,6 +315,106 @@ def find_local_models(extra_url: str | None = None) -> dict:
     with ThreadPoolExecutor(len(targets)) as pool:
         found = list(pool.map(lambda t: _probe(*t), targets))
     return {"models": [m for ms in found for m in ms], "checked": [b for _, b in targets]}
+
+
+# ---------------------------------------------------------------- model servers on the LAN
+# The private IPv4 ranges (RFC 1918). Only addresses in these are scanned, so the search stays on the LAN.
+PRIVATE_V4 = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+LAN_MAX_HOSTS = 1024          # a /22 takes about ten seconds; a bigger subnet is narrowed to the /24 around us
+
+
+def lan_addresses() -> list[str]:
+    """This computer's own IPv4 addresses in the private ranges."""
+    import socket
+    found: set[str] = set()
+    for far in ("10.255.255.254", "172.31.255.254", "192.168.255.254"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((far, 9))           # UDP connect sends nothing; the OS just picks the outgoing address
+                found.add(s.getsockname()[0])
+        except OSError:
+            pass
+    try:
+        found.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    return sorted(a for a in found if any(ipaddress.ip_address(a) in n for n in PRIVATE_V4))
+
+
+def _prefix_lengths() -> dict[str, int]:
+    """Each local IPv4 address's subnet prefix length, from `ip` (Linux) or `ifconfig` (macOS)."""
+    import subprocess
+    for cmd, pat in ((["ip", "-4", "-o", "addr", "show"], r"inet (\d+\.\d+\.\d+\.\d+)/(\d+)"),
+                     (["ifconfig"], r"inet (\d+\.\d+\.\d+\.\d+) netmask (0x[0-9a-f]{8})")):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        found = {a: int(p) if p.isdigit() else bin(int(p, 16)).count("1") for a, p in re.findall(pat, out)}
+        if found:
+            return found
+    return {}
+
+
+def lan_networks() -> list[dict]:
+    """The subnet this computer is on, for each of its LAN addresses (a /24 where the size is unknown)."""
+    prefixes = _prefix_lengths()
+    nets: dict[ipaddress.IPv4Network, dict] = {}
+    for a in lan_addresses():
+        prefix = prefixes.get(a, 24)
+        net = ipaddress.ip_network(f"{a}/{prefix}", strict=False)
+        whole = None
+        if net.num_addresses > LAN_MAX_HOSTS:
+            whole, net = str(net), ipaddress.ip_network(f"{a}/24", strict=False)
+        nets.setdefault(net, {"network": net, "whole": whole})
+    return [nets[n] for n in sorted(nets)]
+
+
+def _socket_budget() -> int:
+    """How many connections to try at once: half the open-file limit (macOS allows only 256), at most 512."""
+    try:
+        import resource
+        return max(32, min(512, resource.getrlimit(resource.RLIMIT_NOFILE)[0] // 2))
+    except (ImportError, OSError, ValueError):   # Windows has no such limit
+        return 512
+
+
+async def _open_ports(hosts: list[str], ports: list[int], timeout: float = 0.6) -> list[tuple[str, int]]:
+    """The (host, port) pairs that accept a TCP connection."""
+    import asyncio
+    sem = asyncio.Semaphore(_socket_budget())
+
+    async def one(host: str, port: int):
+        async with sem:
+            try:
+                _, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+            except (OSError, asyncio.TimeoutError):
+                return None
+            w.close()
+            return host, port
+    return [r for r in await asyncio.gather(*(one(h, p) for h in hosts for p in ports)) if r]
+
+
+def find_lan_models() -> dict:
+    """Look for model servers on the other computers in this computer's subnet and list their chat models."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    nets = lan_networks()
+    own = set(lan_addresses())                # this computer is covered by find_local_models
+    hosts = [str(h) for n in nets for h in n["network"].hosts() if str(h) not in own]
+    names = {port: name for name, port in LOCAL_SERVERS}
+    open_ = asyncio.run(_open_ports(hosts, list(names))) if hosts else []
+    models: list[dict] = []
+    if open_:
+        with ThreadPoolExecutor(min(32, len(open_))) as pool:
+            for ms in pool.map(lambda hp: _probe(names[hp[1]], f"http://{hp[0]}:{hp[1]}/v1"), open_):
+                for m in ms:
+                    host = m["base_url"].split("//", 1)[1].rsplit(":", 1)[0]
+                    if host not in m["server"]:
+                        m["server"] += f" on {host}"
+                    models.append(m)
+    return {"models": models, "addresses": len(hosts), "open": len(open_),
+            "networks": [{"network": str(n["network"]), "whole": n["whole"]} for n in nets]}
 
 
 class OpenAISession:

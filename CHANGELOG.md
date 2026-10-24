@@ -15,6 +15,8 @@ WholeBoard has no releases yet, so changes are grouped by date.
 - Search for local models in Settings: finds Ollama, LM Studio, llama.cpp, Strata, vLLM, Jan and other
   OpenAI-compatible servers on the computer running WholeBoard, shows each chat model with its size, context
   and tool-calling support, and fills in the settings for the one picked.
+- Search the LAN for model servers: checks every address in the subnet the computer is on (a subnet larger than a
+  /22 is narrowed to the /24 around it), only within the private ranges.
 - Roadmap: antenna keep-outs taken from each vendor's guidance, with separate plastic and metal clearances, then
   checked with a VNA in the real enclosure.
 

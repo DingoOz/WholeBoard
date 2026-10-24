@@ -1195,35 +1195,48 @@ async function saveSettings() {
   await loadStatus(true);
 }
 
-// Search the computer running WholeBoard for local model servers and offer each chat model.
-async function findLocalModels() {
-  const form = $("#settingsForm"), out = $("#findLocalOut"), box = $("#localModels"), btn = $("#findLocalBtn");
+// Search the computer running WholeBoard (or the other computers in its subnet) for model servers
+// and offer each chat model.
+async function findLocalModels(lan = false) {
+  const form = $("#settingsForm"), out = $("#findLocalOut"), box = $("#localModels");
+  const btn = lan ? $("#findLanBtn") : $("#findLocalBtn"), both = [$("#findLocalBtn"), $("#findLanBtn")];
   const field = n => form.querySelector(`[name="ai.${n}"]`);
   out.textContent = "";
-  btn.disabled = true; btn.classList.add("busy"); btn.setAttribute("aria-busy", "true");
+  both.forEach(b => b.disabled = true);
+  btn.classList.add("busy"); btn.setAttribute("aria-busy", "true");
   btn.replaceChildren(el("span", { class: "spinner" }), "Searching…");
   box.hidden = false;
-  box.replaceChildren(el("div", { class: "lm searching", role: "status" }, el("span", { class: "spinner" }),
-    "Looking for Ollama, LM Studio, llama.cpp, Strata, vLLM, Jan and other model servers on the computer running WholeBoard…"));
+  box.replaceChildren(el("div", { class: "lm searching", role: "status" }, el("span", { class: "spinner" }), lan
+    ? "Checking every address in this computer's subnet for model servers… this takes a few seconds."
+    : "Looking for Ollama, LM Studio, llama.cpp, Strata, vLLM, Jan and other model servers on the computer running WholeBoard…"));
   let r;
   try {
     // keep the spinner up long enough to be seen when every server answers at once
-    [r] = await Promise.all([api("/api/ai/local-models", { method: "POST", body: { url: field("openai_base_url").value } }),
+    [r] = await Promise.all([lan ? api("/api/ai/lan-models", { method: "POST" })
+                                 : api("/api/ai/local-models", { method: "POST", body: { url: field("openai_base_url").value } }),
                              new Promise(ok => setTimeout(ok, 500))]);
   } catch (e) { box.hidden = true; out.textContent = "✗ " + e.message; return; }
   finally {
-    btn.disabled = false; btn.classList.remove("busy"); btn.removeAttribute("aria-busy");
-    btn.textContent = "Search again";
+    both.forEach(b => b.disabled = false);
+    btn.classList.remove("busy"); btn.removeAttribute("aria-busy");
+    btn.textContent = lan ? "Search the LAN again" : "Search again";
   }
   box.innerHTML = "";
   box.hidden = !r.models.length;
+  const nets = (r.networks || []).map(n => n.whole ? `${n.network} (the part of ${n.whole} around this computer)` : n.network).join(", ");
+  if (lan && !r.networks.length) { out.textContent = "This computer has no address on a LAN (10.x, 172.16–31.x or 192.168.x), so there is nothing to search."; return; }
   if (!r.models.length) {
-    out.textContent = "No local models found. Start Ollama, LM Studio or llama.cpp on the computer running WholeBoard, "
-      + "or type its Server URL below, then search again.";
+    out.textContent = lan
+      ? `No model servers answered on ${nets}. Ollama, LM Studio and llama.cpp only listen on their own computer `
+        + "unless told to serve the network: set OLLAMA_HOST=0.0.0.0 for Ollama, turn on Serve on Local Network in "
+        + "LM Studio, or start llama.cpp with --host 0.0.0.0."
+      : "No local models found. Start Ollama, LM Studio or llama.cpp on the computer running WholeBoard, "
+        + "or type its Server URL below, then search again.";
     return;
   }
   const servers = new Set(r.models.map(m => m.base_url)).size;
-  out.textContent = `Found ${r.models.length} model${r.models.length === 1 ? "" : "s"} on ${servers} server${servers === 1 ? "" : "s"}.`;
+  out.textContent = `Found ${r.models.length} model${r.models.length === 1 ? "" : "s"} on ${servers} server${servers === 1 ? "" : "s"}`
+    + (lan ? ` in ${nets}.` : ".");
   const current = field("provider").value === "openai" ? [field("openai_base_url").value, field("openai_model").value] : [];
   for (const m of r.models) {
     const tools = m.tools === true ? el("span", { class: "chip ok", title: "The model supports tool calling" }, "tools")
@@ -1279,6 +1292,7 @@ function init() {
       : `Start ${b.textContent} on this computer, click Save, then List models.`;
   });
   $("#findLocalBtn").onclick = () => findLocalModels();
+  $("#findLanBtn").onclick = () => findLocalModels(true);
   document.querySelectorAll("[data-list-models]").forEach(b => b.onclick = async () => {
     const out = $("#modelsOut");
     out.textContent = "Saving and asking the provider for its models…";
