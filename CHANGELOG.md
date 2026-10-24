@@ -17,8 +17,30 @@ WholeBoard has no releases yet, so changes are grouped by date.
   and tool-calling support, and fills in the settings for the one picked.
 - Search the LAN for model servers: checks every address in the subnet the computer is on (a subnet larger than a
   /22 is narrowed to the /24 around it), only within the private ranges.
+- A Summary step for a finished board: the render, price, order button, a tile per check, and the designer's
+  things to check before ordering as a checklist. Finished boards open on it.
+- Board titles: the designer names each board, and you can rename it. The boards list shows a render, how long
+  ago it changed and the price, with a search box once there are six or more.
+- A Parts table on the Parts step (JLCPCB number, library type, stock) and the request and answers on the
+  Requirements step.
+- Keyboard shortcuts (press `?`), a draggable divider between the chat and the steps, and *Hide chat*.
+- The tab title and icon show when a board needs an answer, finishes or fails, with optional desktop notifications.
+- A narrow-window layout with the boards list in a drawer.
+- A test that every colour theme keeps text at WCAG AA contrast.
 - Roadmap: antenna keep-outs taken from each vendor's guidance, with separate plastic and metal clearances, then
   checked with a VNA in the real enclosure.
+
+### Changed
+
+- Fewer controls in the board header: the outline, design JSON, folder and delete moved to a **⋯** menu, the tool
+  status folds into one *Workbench ready* chip, and the colour theme moved to *Settings → Appearance*.
+- Steps that finish with warnings show amber. Answered questions fold down, and the designer's final notes fold
+  into the chat with a link to the summary.
+- Messages and confirmations appear inside the page, not as browser pop-ups.
+- Mounting holes, test points, fiducials, net ties and solder jumpers are no longer listed as parts to buy.
+- Darker muted and warning text in the light themes, and dark text on the accent colour in the dark ones, for
+  contrast.
+- Focus outlines for keyboard users, a skip link, labelled controls and less motion when the system asks for it.
 
 ## 2026-10-22
 

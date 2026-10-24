@@ -93,6 +93,15 @@ def normalise(spec: dict) -> dict:
     return spec
 
 
+# Footprints that are only copper or holes: nothing is bought or placed for them (solder jumpers are
+# bridged, or cut, by hand).
+COPPER_ONLY = ("MountingHole", "TestPoint", "Fiducial", "NetTie", "Jumper:SolderJumper")
+
+
+def copper_only(footprint: str | None) -> bool:
+    return str(footprint or "").startswith(COPPER_ONLY)
+
+
 TEST_POINT_FP = "TestPoint:TestPoint_Pad_D1.5mm"
 FIDUCIAL_FP = "Fiducial:Fiducial_1mm_Mask2mm"
 FINE_PITCH = re.compile(r"_P0\.([0-4]\d*|50*)mm")
@@ -280,7 +289,7 @@ def validate(spec: dict) -> Report:
         fps[ref] = fp
         x0, y0, x1, y1 = fp.courtyard
         area += (x1 - x0) * (y1 - y0)
-        if not c.get("lcsc") and not c.get("dnp") and not fid.startswith(("MountingHole", "TestPoint", "Fiducial")):
+        if not c.get("lcsc") and not c.get("dnp") and not copper_only(fid):
             rep.warnings.append(f"{ref}: no LCSC part number, so JLCPCB cannot assemble or price it")
 
     used: dict[str, str] = {}

@@ -15,4 +15,4 @@ The chat says what was kept, and *History* marks the revision as edited in KiCad
 
 ## Start the layout afresh
 
-Set `"keep_kicad_edits": false` in the design (*Edit design JSON*), or ask the designer to start the layout again.
+Set `"keep_kicad_edits": false` in the design (**⋯** → *Edit design JSON*), or ask the designer to start the layout again.

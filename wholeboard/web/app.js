@@ -22,6 +22,25 @@ const api = async (path, opts = {}) => {
 };
 const money = v => (v === null || v === undefined) ? "–" : "$" + Number(v).toFixed(2);
 
+// A short message in the corner instead of the browser's alert().
+function toast(text, kind = "info", ms = 7000) {
+  const t = el("div", { class: "toast " + kind, role: kind === "error" ? "alert" : null }, text);
+  $("#toasts").append(t);
+  setTimeout(() => t.remove(), ms);
+}
+
+// A confirmation in the page instead of the browser's confirm(); resolves true for OK.
+function ask(text, { ok = "OK", danger = false } = {}) {
+  const d = $("#askDialog"), btn = $("#askOk");
+  $("#askText").textContent = text;
+  btn.textContent = ok;
+  btn.classList.toggle("danger-ok", danger);
+  d.returnValue = "";
+  d.showModal();
+  if (danger) d.querySelector('[value="cancel"]').focus(); else btn.focus();
+  return new Promise(res => d.addEventListener("close", () => res(d.returnValue === "ok"), { once: true }));
+}
+
 const EXAMPLES = [
   ["USB-C LED board", "A small USB-C powered board (power only) with a 3.3 V regulator, a power LED and three user LEDs driven from a 4-pin header. As small as practical."],
   ["ESP32-C3 sensor", "An ESP32-C3 sensor node: USB-C for power and programming, BME280 temperature/humidity/pressure sensor on I2C, a status LED, a boot and reset button, and a 4-pin I2C expansion header. About 40 x 30 mm."],
@@ -30,7 +49,18 @@ const EXAMPLES = [
 ];
 
 const S = { status: null, steps: [], projects: [], pid: null, project: null, ws: null, visuals: {},
-            selStep: null, follow: true, lastSeq: 0, logs: [], questions: {} };
+            selStep: null, follow: true, lastSeq: 0, logs: [], questions: {}, qa: [], pending: new Set(), finish: null, title: "" };
+
+// "3 min ago" for the boards list
+const ago = t => {
+  if (!t) return "";
+  const s = Date.now() / 1000 - t;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  if (s < 86400 * 7) return `${Math.round(s / 86400)} d ago`;
+  return new Date(t * 1000).toLocaleDateString();
+};
 
 // ------------------------------------------------------------------ status and home
 async function loadStatus(refresh = false) {
@@ -38,13 +68,23 @@ async function loadStatus(refresh = false) {
   S.steps = S.status.steps;
   const st = S.status, chips = $("#statusChips");
   chips.innerHTML = "";
-  const chip = (ok, text, title) => chips.append(el("span", { class: "chip " + (ok ? "ok" : "bad"), title }, text));
-  chip(!!st.kicad_version, st.kicad_version ? `KiCad ${st.kicad_version}` : "KiCad missing", st.kicad_cli || "kicad-cli not found");
-  chip(!!st.tracemaker_version, st.tracemaker_version || "TraceMaker missing", st.tracemaker || "tracemaker not found");
-  chip(!!st.freecad_version, st.freecad_version ? `FreeCAD ${st.freecad_version}` : "FreeCAD missing", st.freecad || "FreeCAD not found (needed for enclosures)");
-  chip(!!st.ngspice_version, st.ngspice_version ? `ngspice ${st.ngspice_version.replace(" (Docker)", "")}` : "ngspice missing", st.ngspice || "ngspice not found (needed for simulation)");
-  chip(st.libs.footprints > 0, st.libs.footprints ? `${st.libs.footprints.toLocaleString()} footprints` : "No KiCad libraries", st.libs.footprint_dir || "");
-  chip(st.ai.ready, st.ai.label, st.ai.ready ? "AI configured" : "AI not configured: open Settings");
+  const chip = ([ok, text, title]) => el("span", { class: "chip " + (ok ? "ok" : "bad"), title }, text);
+  const tools = [
+    [!!st.kicad_version, st.kicad_version ? `KiCad ${st.kicad_version}` : "KiCad missing", st.kicad_cli || "kicad-cli not found"],
+    [!!st.tracemaker_version, st.tracemaker_version || "TraceMaker missing", st.tracemaker || "tracemaker not found"],
+    [!!st.freecad_version, st.freecad_version ? `FreeCAD ${st.freecad_version}` : "FreeCAD missing", st.freecad || "FreeCAD not found (needed for enclosures)"],
+    [!!st.ngspice_version, st.ngspice_version ? `ngspice ${st.ngspice_version.replace(" (Docker)", "")}` : "ngspice missing", st.ngspice || "ngspice not found (needed for simulation)"],
+    [st.libs.footprints > 0, st.libs.footprints ? `${st.libs.footprints.toLocaleString()} footprints` : "No KiCad libraries", st.libs.footprint_dir || ""],
+  ];
+  // Tools that work fold into one chip (click it for the list); missing ones stay in view.
+  const bad = tools.filter(t => !t[0]), ready = tools.length - bad.length;
+  const pop = el("div", { class: "status-pop", id: "statusPop", hidden: true }, tools.map(chip));
+  const sum = el("button", { class: "chip ok summary", type: "button", "aria-expanded": "false", "aria-controls": "statusPop",
+                             title: tools.filter(t => t[0]).map(t => t[1]).join(" · ") },
+    bad.length ? `${ready} of ${tools.length} tools ready` : "Workbench ready");
+  sum.onclick = e => { e.stopPropagation(); pop.hidden = !pop.hidden; sum.setAttribute("aria-expanded", String(!pop.hidden)); };
+  chips.append(...bad.map(chip), ready ? sum : "", pop,
+    chip([st.ai.ready, st.ai.label, st.ai.ready ? "The AI model doing the design" : "AI not configured: open Settings"]));
   renderSetup();
 }
 
@@ -73,44 +113,88 @@ function renderExamples() {
 // ------------------------------------------------------------------ projects
 async function loadProjects() {
   S.projects = await api("/api/projects");
-  const shown = S.projects.filter(p => !p.hidden), cleared = S.projects.length - shown.length;
+  renderProjects();
+}
+
+function renderProjects() {
+  const q = $("#boardSearch").value.trim().toLowerCase();
+  const all = S.projects.filter(p => !p.hidden), cleared = S.projects.length - all.length;
+  const shown = q ? all.filter(p => `${p.title} ${p.prompt || ""}`.toLowerCase().includes(q)) : all;
   const ul = $("#projectList");
   ul.innerHTML = "";
-  if (!shown.length) ul.append(el("li", { class: "muted" }, cleared ? "List cleared" : "No boards yet"));
-  $("#clearListBtn").hidden = !shown.length;
+  if (!shown.length) ul.append(el("li", { class: "muted empty" }, q ? "No boards match" : cleared ? "List cleared" : "No boards yet"));
+  $("#clearListBtn").hidden = !all.length;
+  $("#boardSearch").hidden = all.length < 6 && !q;
   $("#restoreListBtn").hidden = !cleared;
   $("#restoreListBtn").textContent = `Show ${cleared} cleared board${cleared === 1 ? "" : "s"}`;
   for (const p of shown) {
-    ul.append(el("li", { class: p.id === S.pid ? "on" : "", onclick: () => openProject(p.id) },
-      el("span", { class: "t", title: p.title }, p.title),
-      el("span", { class: "s" }, el("span", {}, p.status || ""), el("span", {}, p.total ? money(p.total) : ""))));
+    const open = () => { document.body.classList.remove("boards-open"); openProject(p.id); };
+    ul.append(el("li", { class: p.id === S.pid ? "on" : "", tabindex: 0, role: "link", "aria-current": p.id === S.pid ? "page" : null,
+                         title: p.prompt || p.title, onclick: open,
+                         onkeydown: e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } } },
+      p.thumb ? el("img", { class: "thumb", src: p.thumb, alt: "", loading: "lazy" }) : el("span", { class: "thumb none", "aria-hidden": "true" }, "▦"),
+      el("span", { class: "t" }, p.title),
+      el("span", { class: "s" }, el("span", {}, p.status || "", el("span", { class: "when" }, ago(p.updated))),
+        el("span", {}, p.total ? money(p.total) : ""))));
   }
+}
+
+// Rename the open board in place: Enter saves, Esc cancels, an empty name goes back to the designer's own.
+function startRename() {
+  const h = $("#wsTitle");
+  if (!S.pid || h.isContentEditable) return;
+  const old = h.textContent;
+  h.contentEditable = "true";
+  h.focus();
+  getSelection().selectAllChildren(h);
+  const finish = async save => {
+    h.contentEditable = "false";
+    h.onkeydown = h.onblur = null;
+    const t = h.textContent.trim();
+    if (!save || t === old) { h.textContent = old; return; }
+    try {
+      const r = await api(`/api/projects/${S.pid}`, { method: "PATCH", body: { title: t } });
+      S.title = h.textContent = r.title;
+      if (S.selStep === "summary") renderStage();
+      signal();
+      loadProjects();
+    } catch (e) { h.textContent = old; toast(e.message, "error"); }
+  };
+  h.onkeydown = e => {
+    if (e.key === "Enter") { e.preventDefault(); h.blur(); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  };
+  h.onblur = () => finish(true);
 }
 
 function showHome() {
   if (S.ws) { S.ws.onclose = null; S.ws.close(); S.ws = null; }
-  S.pid = null;
+  S.pid = null; S.pending.clear();
   $("#home").hidden = false; $("#workspace").hidden = true;
   history.replaceState(null, "", "#");
+  signal();
   loadProjects();
 }
 
 async function openProject(pid) {
   if (S.ws) { S.ws.onclose = null; S.ws.close(); S.ws = null; }
   S.pid = pid; S.visuals = {}; S.selStep = null; S.follow = true; S.lastSeq = 0; S.logs = []; S.questions = {};
+  S.qa = []; S.pending.clear(); S.finish = null;
   $("#home").hidden = true; $("#workspace").hidden = false;
   $("#chat").innerHTML = ""; $("#log").textContent = "";
   history.replaceState(null, "", "#" + pid);
   const data = await api(`/api/projects/${pid}`);
   S.project = data.state;
-  $("#wsTitle").textContent = S.project.title;
+  S.title = $("#wsTitle").textContent = data.title || S.project.title;
   showUsage(S.project.usage);
   renderStepper();
   setStatus(S.project.status, S.project.status_note);
   for (const e of data.events) handleEvent(e, true);
   scrollChat();
-  if (!S.selStep) selectStep(lastStepWithVisual() || "brief", false);
+  const built = S.project.steps.outputs?.status === "done" && S.project.status !== "running";
+  if (!S.selStep) selectStep(built ? "summary" : lastStepWithVisual() || "brief", false);
   else renderStage();
+  signal();
   loadProjects();
   connect();
 }
@@ -133,25 +217,30 @@ function handleEvent(e, replay) {
     case "tool": addMsg("tool", e.text); break;
     case "question": addQuestion(e, replay); break;
     case "answer": markAnswered(e.id, e.text); break;
-    case "finish": addFinish(e.text); break;
-    case "status": setStatus(e.status, e.note); if (!replay) loadProjects(); break;
+    case "finish": addFinish(e.text, replay); break;
+    case "status":
+      setStatus(e.status, e.note);
+      if (!replay) { loadProjects(); if (["done", "error"].includes(e.status)) notifyUser(e.status === "done" ? "Your board is ready" : "The build stopped with an error", e.note || S.title); }
+      break;
     case "usage": showUsage(e); break;
     case "stock": S.project.stock = e; if (S.selStep === "quote") renderStage(); break;
     case "step":
       S.project.steps[e.key] = { status: e.status, detail: e.detail };
       updateStep(e.key);
+      if (e.key === "outputs") updateStep("summary");
       if (!replay && e.status === "running" && S.follow) selectStep(e.key, false);
       break;
     case "log": addLog(e.step, e.text); break;
     case "simlab": if (!replay && e.action === "video") { S.simlabVideo = true; S.follow = false; selectStep("sim", true); } break;
     case "visual":
       (S.visuals[e.step] ||= {})[e.kind] = e;
+      if (e.step === "quote") updateStep("summary");
       if (e.kind === "viewer" && !replay) S.liveViewer = true;
       if (!replay && S.follow) selectStep(e.step, false);
       else if (S.selStep === e.step) renderStage();
       break;
   }
-  if (!replay) scrollChat();
+  if (!replay) { scrollChat(); signal(); }
 }
 
 function scrollChat() { const c = $("#chat"); c.scrollTop = c.scrollHeight; }
@@ -161,19 +250,20 @@ function chatAppend(node) {
   if (dots) $("#chat").insertBefore(node, dots); else $("#chat").append(node);
 }
 
-// Minimal, safe Markdown for AI messages: escape first, then bold, code and bullet lists.
+// Minimal, safe Markdown for AI messages: escape first, then bold, code, and bulleted or numbered lists.
+const mdEsc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const mdInline = s => mdEsc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
 function md(text) {
-  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
   const out = [];
-  let list = false;
+  let list = null;
   for (const line of text.split("\n")) {
-    const m = line.match(/^\s*[-*•]\s+(.*)$/);
-    if (m) { if (!list) { out.push("<ul>"); list = true; } out.push("<li>" + inline(m[1]) + "</li>"); continue; }
-    if (list) { out.push("</ul>"); list = false; }
-    out.push(line.trim() ? "<p>" + inline(line) + "</p>" : "");
+    const m = line.match(/^\s*(?:([-*•])|\d+[.)])\s+(.*)$/);
+    const kind = m ? (m[1] ? "ul" : "ol") : null;
+    if (list && kind !== list) { out.push(`</${list}>`); list = null; }
+    if (m) { if (!list) { out.push(`<${kind}>`); list = kind; } out.push("<li>" + mdInline(m[2]) + "</li>"); continue; }
+    out.push(line.trim() ? "<p>" + mdInline(line) + "</p>" : "");
   }
-  if (list) out.push("</ul>");
+  if (list) out.push(`</${list}>`);
   const div = document.createElement("div");
   div.className = "md";
   div.innerHTML = out.join("");
@@ -194,19 +284,31 @@ function addQuestion(e, replay) {
   box.append(el("div", { class: "free" }, input, el("button", { class: "btn", type: "button", onclick: () => send(input.value) }, "Answer")));
   chatAppend(box);
   S.questions[e.id] = box;
-  if (!replay) setTimeout(() => input.focus(), 50);
+  S.qa.push({ id: e.id, q: e.question, a: null });
+  S.pending.add(e.id);
+  if (!replay) { setTimeout(() => input.focus(), 50); notifyUser("The designer has a question", e.question); }
 }
 
+// Once answered, a question shrinks to one line: the question, then the answer.
 function markAnswered(id, text) {
+  S.pending.delete(id);
+  const qa = S.qa.find(x => x.id === id);
+  if (qa) qa.a = text;
   const box = S.questions[id];
   if (!box) return;
   box.classList.add("answered");
-  box.querySelectorAll("button, input").forEach(b => b.disabled = true);
-  box.append(el("div", { class: "ans" }, "↳ " + text));
+  box.replaceChildren(el("div", { class: "q" }, qa?.q || ""), el("div", { class: "ans" }, text));
+  if (S.selStep === "brief") renderStage();
 }
 
-function addFinish(text) {
-  chatAppend(el("div", { class: "finish" }, el("b", {}, "Board ready"), md(text)));
+function addFinish(text, replay) {
+  S.finish = text;
+  const lead = text.split("\n").find(l => l.trim() && !/^\s*([-*•]|\d+[.)])\s/.test(l)) || "";
+  chatAppend(el("div", { class: "finish" }, el("b", {}, "Board ready"), md(lead),
+    el("div", { class: "row-actions" }, el("button", { class: "btn primary", type: "button", onclick: () => goStep("summary") }, "Open the summary")),
+    el("details", {}, el("summary", {}, "All the designer's notes"), md(text))));
+  updateStep("summary");
+  if (!replay && S.follow) selectStep("summary", false);
 }
 
 function showUsage(u) {
@@ -251,23 +353,43 @@ function addLog(step, text) {
 }
 
 // ------------------------------------------------------------------ stepper and stage
+// The Summary is the last step: it exists only in the page, once the board is built.
+const SUMMARY = { key: "summary", title: "Summary of the finished board", short: "Summary" };
+const allSteps = () => [...S.steps, SUMMARY];
+const quoteOf = () => S.visuals.quote?.quote?.quote;
+
+function stepState(key) {
+  if (key !== "summary") return S.project.steps[key] || { status: "pending" };
+  const built = S.project.steps.outputs?.status === "done", q = quoteOf();
+  return { status: built ? "done" : "pending", detail: built ? (q ? `${money(q.total)} · ready to order` : "ready") : "" };
+}
+
+// A finished step that still reported warnings or problems gets an amber dot, not a green one.
+function stepClass(st) {
+  if (st.status === "done" && /\b[1-9]\d* (warnings?|problems?|errors?)\b/i.test(st.detail || "")) return "warn";
+  return st.status;
+}
+
 function renderStepper() {
   const ol = $("#stepper");
   ol.innerHTML = "";
-  S.steps.forEach((s, i) => {
-    const st = S.project.steps[s.key] || { status: "pending" };
-    ol.append(el("li", { id: "step-" + s.key, class: st.status, onclick: () => { S.follow = false; selectStep(s.key, true); } },
-      el("span", { class: "n" }, `${i + 1}`), el("span", { class: "t", title: s.title }, s.short || s.title), el("span", { class: "d", title: st.detail || "" }, st.detail || "")));
+  allSteps().forEach((s, i) => {
+    const li = el("li", { id: "step-" + s.key, role: "tab", "aria-controls": "stage", tabindex: -1,
+                          onclick: () => goStep(s.key) },
+      el("span", { class: "n" }, s.key === "summary" ? "★" : `${i + 1}`), el("span", { class: "t" }, s.short || s.title), el("span", { class: "d" }));
+    ol.append(li);
+    updateStep(s.key);
   });
 }
 
 function updateStep(key) {
   const li = $("#step-" + key);
   if (!li) return;
-  const st = S.project.steps[key];
-  li.className = st.status + (S.selStep === key ? " sel" : "");
+  const st = stepState(key), s = allSteps().find(x => x.key === key);
+  li.className = stepClass(st) + (S.selStep === key ? " sel" : "");
   li.querySelector(".d").textContent = st.detail || "";
-  li.querySelector(".d").title = st.detail || "";
+  li.title = s.title + (st.detail ? `\n${st.detail}` : "");
+  li.setAttribute("aria-label", `${s.title}: ${{ done: "done", warn: "done with warnings", error: "failed", running: "running", pending: "not started" }[stepClass(st)] || st.status}${st.detail ? ". " + st.detail : ""}`);
 }
 
 function lastStepWithVisual() {
@@ -276,14 +398,30 @@ function lastStepWithVisual() {
   return last;
 }
 
+// A step the user chose: stop following the build until they come back to its latest step.
+function goStep(key) { S.follow = false; selectStep(key, true); }
+
 function selectStep(key, user) {
   S.selStep = key;
-  document.querySelectorAll(".stepper li").forEach(li => li.classList.toggle("sel", li.id === "step-" + key));
+  document.querySelectorAll(".stepper li").forEach(li => {
+    const on = li.id === "step-" + key;
+    li.classList.toggle("sel", on);
+    li.setAttribute("aria-selected", String(on));
+    li.tabIndex = on ? 0 : -1;
+  });
   if (user && key === lastStepWithVisual()) S.follow = true;
   renderStage();
   const pre = $("#log");
   pre.textContent = S.logs.filter(([s]) => s === key).map(([, t]) => t).join("\n");
-  $("#logStep").textContent = "· " + (S.steps.find(s => s.key === key)?.title || "");
+  $("#logStep").textContent = "· " + (allSteps().find(s => s.key === key)?.title || "");
+}
+
+// Arrow keys move along the steps; Home and End jump to the ends.
+function moveStep(delta, to) {
+  const keys = allSteps().map(s => s.key);
+  const i = to != null ? to : Math.max(0, Math.min(keys.length - 1, keys.indexOf(S.selStep) + delta));
+  goStep(keys[(i + keys.length) % keys.length]);
+  $("#step-" + keys[(i + keys.length) % keys.length])?.focus();
 }
 
 const STEP_HELP = {
@@ -306,13 +444,20 @@ function renderStage() {
   const stage = $("#stage");
   stage.innerHTML = "";
   const key = S.selStep;
+  if (key === "summary") { stage.append(renderSummary()); return; }
   const vis = S.visuals[key] || {};
   const order = ["import", "viewer", "board", "svg", "erc", "sim", "power", "netlist", "drc", "checks", "impedance", "images", "files", "panel", "report", "bringup", "firmware", "review", "case", "enclosure", "quote"];
   const kinds = Object.keys(vis).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   if (key === "sim" && vis.sim?.result?.ran && S.visuals.outputs?.files) kinds.unshift("simlab");
   if (key === "route" && !S.liveViewer) { const i = kinds.indexOf("viewer"); if (i >= 0) kinds.splice(i, 1); }
+  const extra = key === "brief" ? briefCard() : key === "parts" ? partsCard() : null;
+  if (extra) stage.append(extra);
   if (!kinds.length) {
     const st = S.project.steps[key] || {};
+    if (extra) {
+      if (st.status === "running") stage.append(el("p", { class: "muted" }, STEP_HELP[key] + " Follow the conversation on the left."));
+      return;
+    }
     stage.append(el("div", { class: "empty" }, el("p", {}, STEP_HELP[key] || ""), st.detail ? el("p", {}, el("b", {}, st.detail)) : ""));
     if (key === "brief" || key === "parts") stage.lastChild.append(el("p", { class: "muted" }, "Follow the conversation on the left."));
     return;
@@ -326,6 +471,107 @@ function renderStage() {
     if (first?.dataset) first.dataset.kind = kind;
     stage.append(node);
   }
+}
+
+// The Requirements step: the request, the answers given, and what the designer took from them.
+function briefCard() {
+  const body = el("div", {}, el("h5", {}, "Your request"), el("p", { class: "brief-text" }, S.project.prompt || ""));
+  if (S.qa.length) body.append(el("h5", {}, "Your answers"), el("ul", { class: "list-note" }, S.qa.map(x =>
+    el("li", {}, el("span", { class: "muted" }, x.q + " "), x.a ? el("b", {}, x.a) : el("i", { class: "muted" }, "waiting for your answer")))));
+  const sum = S.project.spec?.summary;
+  if (sum) body.append(el("h5", {}, "What the designer is making"), el("p", {}, sum));
+  return card("Requirements", body);
+}
+
+// Footprints that are only copper or holes on the board: nothing to buy (as design.COPPER_ONLY).
+const copperOnly = fp => /^(MountingHole|TestPoint|Fiducial|NetTie|Jumper:SolderJumper)/.test(fp || "");
+
+// The Parts step: every part with its JLCPCB number, library type and stock once the quote has them.
+function partsCard() {
+  const comps = S.visuals.netlist?.netlist?.components || S.project.spec?.components;
+  if (!comps?.length) return null;
+  const byRef = {};
+  for (const l of quoteOf()?.components?.lines || []) for (const r of l.refs) byRef[r] = l;
+  const copper = comps.filter(c => copperOnly(c.footprint)).length;
+  const lines = new Set(comps.filter(c => c.lcsc).map(c => c.lcsc)).size;
+  const rows = comps.map(c => {
+    const l = byRef[c.ref], cu = copperOnly(c.footprint);
+    return [el("b", {}, c.ref), c.value || "", el("span", { class: "pins" }, (c.footprint || "").split(":").pop()),
+      c.lcsc ? el("a", { href: `https://jlcpcb.com/partdetail/${c.lcsc}`, target: "_blank", rel: "noopener" }, c.lcsc) : el("span", { class: "muted" }, cu ? "no part needed" : "–"),
+      l?.library_type ? el("span", { class: "tag " + l.library_type }, l.library_type) : (!c.lcsc && !cu ? el("span", { class: "tag warn" }, "fit by hand") : ""),
+      l?.stock != null ? l.stock.toLocaleString() : "", el("span", { class: "muted" }, c.description || "")];
+  });
+  return card(`Parts (${comps.length})`, el("div", {},
+    el("p", { class: "muted parts-note" }, `${lines} JLCPCB part numbers` + (copper ? `; ${copper} copper-only (jumpers, test pads, holes) with nothing to buy` : "") +
+      (quoteOf() ? "." : ". Library type and stock appear once the quote is made.")),
+    table(["Ref", "Value", "Package", "LCSC", "Type", "Stock", "Description"], rows)));
+}
+
+// The Summary step: the finished board on one page.
+function renderSummary() {
+  const frag = document.createDocumentFragment();
+  if (S.project.steps.outputs?.status !== "done") {
+    frag.append(el("div", { class: "empty" }, el("p", {}, "The summary appears here once the board is built: the render, the price, every check and the files to order with.")));
+    return frag;
+  }
+  const out = S.visuals.outputs || {}, q = quoteOf(), img = out.images?.images?.[0];
+  const facts = el("div", { class: "summary-facts" },
+    el("h3", {}, S.title),
+    el("p", { class: "muted" }, [S.project.steps.layout?.detail, S.project.steps.parts?.detail].filter(Boolean).join(" · ")),
+    q ? el("div", {}, el("div", { class: "summary-price" }, money(q.total)),
+      el("div", { class: "muted" }, `${money(q.per_board)} per ${q.assembly ? "assembled " : ""}board · ${q.quantity} boards` + (q.assembly ? `, ${q.assembly.boards} assembled` : ""))) : "",
+    el("div", { class: "row-actions" },
+      out.files ? el("a", { class: "btn primary", href: q?.order_url || "https://cart.jlcpcb.com/quote", target: "_blank", rel: "noopener" }, "Order at JLCPCB ↗") : "",
+      out.report ? el("a", { class: "btn", href: out.report.url, target: "_blank" }, "Open the report") : "",
+      el("button", { class: "btn", type: "button", onclick: () => goStep("quote") }, "Quote details")));
+  frag.append(card("Your board", el("div", { class: "summary-top" },
+    img ? el("img", { class: "summary-hero", src: img.url, alt: `3D render of ${S.title}` }) : el("div"), facts)));
+  const tiles = ["netlist", "schematic", "sim", "drc", "review", "quote", "enclosure"].map(k => {
+    const s = S.steps.find(x => x.key === k), st = stepState(k);
+    return el("button", { type: "button", class: "check-tile " + stepClass(st), onclick: () => goStep(k) },
+      el("b", {}, s?.title || k), el("span", { title: st.detail || "" }, st.detail || (st.status === "pending" ? "not run" : st.status)));
+  });
+  frag.append(card("Checks", el("div", { class: "check-grid" }, tiles)));
+  if (S.finish) {
+    const { todo, rest } = splitTodo(S.finish);
+    if (todo.length) frag.append(card("Things to check before ordering", todoList(todo)));
+    if (rest.trim()) frag.append(card("The designer's notes", md(rest)));
+  }
+  if (out.files) frag.append(card("Files for JLCPCB", el("div", { class: "files" },
+    out.files.files.map(f => el("a", { class: "btn", href: f.url, download: f.name }, "⬇ " + f.name)))));
+  return frag;
+}
+
+// Pull the "Things to check" list out of the designer's final message.
+function splitTodo(text) {
+  const lines = text.split("\n"), todo = [], rest = [];
+  let inList = false;
+  for (const line of lines) {
+    const item = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (/things to (check|verify|confirm|watch)/i.test(line) && !item) { inList = true; continue; }
+    if (inList && item) { todo.push(item[1]); continue; }
+    if (inList && line.trim()) inList = false;
+    rest.push(line);
+  }
+  return { todo, rest: rest.join("\n") };
+}
+
+// A checklist whose ticks are remembered in this browser, per board and revision.
+function todoList(items) {
+  const key = `wb-todo-${S.pid}-${S.project.revision || 0}`;
+  let done = [];
+  try { done = JSON.parse(localStorage.getItem(key) || "[]"); } catch (e) { /* storage blocked */ }
+  return el("ul", { class: "todo" }, items.map((t, i) => {
+    const box = el("input", { type: "checkbox", checked: done.includes(i) });
+    const li = el("li", { class: done.includes(i) ? "done-item" : "" }, el("label", {}, box, el("span", {})));
+    li.querySelector("span").innerHTML = mdInline(t);
+    box.addEventListener("change", () => {
+      done = box.checked ? [...done, i] : done.filter(x => x !== i);
+      li.classList.toggle("done-item", box.checked);
+      try { localStorage.setItem(key, JSON.stringify(done)); } catch (e) { /* storage blocked */ }
+    });
+    return li;
+  }));
 }
 
 function card(title, body, opts = {}) {
@@ -527,7 +773,7 @@ const RENDER = {
     const body = el("div", {}, el("p", {}, v.summary || ""));
     const probs = (v.issues || []).filter(i => i.severity === "problem"), notes = (v.issues || []).filter(i => i.severity !== "problem");
     if (probs.length) body.append(el("ul", { class: "list-err" }, probs.map(i => el("li", {}, i.text))));
-    if (notes.length) body.append(el("ul", { class: "list-warn" }, notes.map(i => el("li", {}, i.text))));
+    if (notes.length) body.append(el("h5", {}, "Notes"), el("ul", { class: "list-note" }, notes.map(i => el("li", {}, i.text))));
     if (!probs.length && !notes.length) body.append(el("p", { class: "muted" }, "Nothing to report."));
     return card(v.title, body);
   },
@@ -813,9 +1059,9 @@ function firmwareBuild(v, f) {
     build.disabled = true;
     try { await api(`/api/projects/${S.pid}/firmware/build`, { method: "POST" }); }
     catch (e) {
-      if (/not installed/i.test(e.message) && confirm("PlatformIO is not installed. Install it now (pip, about 1 minute)?")) {
+      if (/not installed/i.test(e.message) && await ask("PlatformIO is not installed. Install it now? It takes about a minute.", { ok: "Install" })) {
         await api("/api/tools/platformio/install", { method: "POST" }); await api(`/api/projects/${S.pid}/firmware/build`, { method: "POST" });
-      } else alert(e.message);
+      } else if (!/not installed/i.test(e.message)) toast(e.message, "error");
     }
   };
   box.append(el("div", { class: "row-actions" }, build,
@@ -870,7 +1116,7 @@ function flashEsp(b) {
 function renderStock(q) {
   const st = S.project.stock, box = el("div", { class: "stock" });
   const btn = el("button", { class: "btn primary", type: "button" }, st ? "Check again" : "Check stock now");
-  btn.onclick = async () => { btn.disabled = true; btn.textContent = "Checking…"; try { await api(`/api/projects/${S.pid}/stock`, { method: "POST" }); } catch (e) { alert(e.message); btn.disabled = false; } };
+  btn.onclick = async () => { btn.disabled = true; btn.textContent = "Checking…"; try { await api(`/api/projects/${S.pid}/stock`, { method: "POST" }); } catch (e) { toast(e.message, "error"); btn.disabled = false; } };
   box.append(el("h5", {}, el("span", {}, "Before you order: live stock"), el("span", { class: "muted" }, st ? `checked ${st.checked_at}` : "")),
     el("div", { class: "row-actions" }, btn, el("span", { class: "muted" }, "Stock changes daily: check right before ordering.")));
   if (st) {
@@ -894,6 +1140,14 @@ function renderFabs(q) {
       el("span", { class: "muted" }, (x.basis ? x.basis + ". " : "") + (x.assembly_basis ? "Assembly: " + x.assembly_basis + ". " : "") + (x.notes || ""))])));
 }
 
+// Quotes saved before copper-only parts were left out still list them: hide those lines.
+function boughtNothing(line) {
+  if (line.lcsc || line.total) return false;
+  const comps = S.visuals.netlist?.netlist?.components || S.project?.spec?.components || [];
+  const fp = Object.fromEntries(comps.map(c => [c.ref, c.footprint]));
+  return line.refs.every(r => copperOnly(fp[r]));
+}
+
 function renderQuote(v) {
   const q = v.quote, o = v.options || {};
   const sec = (title, part) => part ? [el("h5", {}, el("span", {}, title), el("span", {}, money(part.subtotal))),
@@ -904,7 +1158,7 @@ function renderQuote(v) {
   if (q.components) {
     left.append(el("h5", {}, el("span", {}, "Components"), el("span", {}, money(q.components.subtotal))),
       el("table", {}, el("thead", {}, el("tr", {}, ["Refs", "Part", "Type", "Stock", "Qty", "Unit", "Total"].map((h, i) => el("th", { class: i > 2 ? "num" : "" }, h)))),
-        el("tbody", {}, q.components.lines.map(l => el("tr", {},
+        el("tbody", {}, q.components.lines.filter(l => !boughtNothing(l)).map(l => el("tr", {},
           el("td", {}, l.refs.join(", ")),
           el("td", {}, l.lcsc ? el("a", { href: `https://jlcpcb.com/partdetail/${l.lcsc}`, target: "_blank" }, l.lcsc) : "–", " ", el("span", { class: "muted" }, l.mpn || l.value || "")),
           el("td", {}, l.library_type ? el("span", { class: "tag " + l.library_type }, l.library_type) : "", l.status !== "ok" ? el("span", { class: "tag bad" }, l.status) : ""),
@@ -961,7 +1215,7 @@ function renderQuote(v) {
       pb.disabled = true; pb.textContent = "KiKit is drawing the panel…";
       try {
         const r = await api(`/api/projects/${S.pid}/panel`, { method: "POST", body: { nx: want.nx, ny: want.ny } });
-        if (r.ok) selectStep("outputs", true); else alert(r.errors.join("\n"));
+        if (r.ok) selectStep("outputs", true); else toast(r.errors.join("\n"), "error");
       } finally { pb.disabled = false; pb.textContent = `Make the ${want.nx} × ${want.ny} panel files`; }
     };
     left.append(el("div", { class: "row-actions" }, pb, el("span", { class: "muted" },
@@ -1088,7 +1342,7 @@ async function openHistory() {
     box.dataset.rev = r.revision;
     const restore = el("button", { class: "btn small", type: "button" }, r.current ? "Rebuild" : "Restore");
     restore.addEventListener("click", async () => {
-      if (!confirm(`Rebuild revision ${r.revision} as a new revision? Nothing is deleted.`)) return;
+      if (!await ask(`Rebuild revision ${r.revision} as a new revision? Nothing is deleted.`, { ok: "Rebuild" })) return;
       $("#historyDialog").close();
       await api(`/api/projects/${S.pid}/revisions/${r.revision}/restore`, { method: "POST" });
     });
@@ -1259,6 +1513,43 @@ async function findLocalModels(lan = false) {
   }
 }
 
+// ------------------------------------------------------------------ attention: tab title, icon, notifications
+const ICON = (() => { const i = new Image(); i.src = "/static/icon.svg"; return i; })();
+let unseen = null;          // "done" or "error" that happened while the page was in the background
+
+// The tab's title and icon say what the open board needs: an answer, a running build, or a result.
+function signal() {
+  const st = S.pid ? S.project?.status : null;
+  const mark = S.pending.size ? ["?", "#e0a23a"] : unseen === "error" ? ["!", "#ef6a63"] : unseen === "done" ? ["✓", "#37b37b"]
+    : st === "running" ? ["…", "#6aa5f5"] : null;
+  document.title = (mark ? `(${mark[0]}) ` : "") + (S.pid && S.title ? `${S.title} – ` : "") + "WholeBoard";
+  const link = document.querySelector('link[rel="icon"]');
+  if (!mark) { link.href = "/static/icon.svg"; return; }
+  const draw = () => {
+    const c = document.createElement("canvas"); c.width = c.height = 64;
+    const g = c.getContext("2d");
+    g.drawImage(ICON, 0, 0, 64, 64);
+    g.beginPath(); g.arc(48, 48, 15, 0, Math.PI * 2); g.fillStyle = mark[1]; g.fill();
+    g.lineWidth = 3; g.strokeStyle = "#fff"; g.stroke();
+    link.href = c.toDataURL("image/png");
+  };
+  ICON.complete ? draw() : ICON.addEventListener("load", draw, { once: true });
+}
+
+const notifyOn = () => { try { return localStorage.getItem("wb-notify") === "1"; } catch (e) { return false; } };
+
+// A desktop notification, only while the page is in the background and only if the user turned them on.
+function notifyUser(title, body) {
+  if (!document.hidden) return;
+  if (/ready|error/i.test(title)) unseen = /error/i.test(title) ? "error" : "done";
+  signal();
+  if (!notifyOn() || !("Notification" in window) || Notification.permission !== "granted") return;
+  const n = new Notification(title, { body: (body || "").slice(0, 180), icon: "/static/icon.svg", tag: "wholeboard-" + S.pid });
+  n.onclick = () => { window.focus(); n.close(); };
+}
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden && unseen) { unseen = null; signal(); } });
+
 // ------------------------------------------------------------------ wiring
 function init() {
   renderExamples();
@@ -1345,7 +1636,7 @@ function init() {
     e.preventDefault();
     const prompt = $("#prompt").value.trim();
     if (!prompt) return;
-    if (!S.status.ai.ready && !confirm("The AI is not configured yet. Start anyway?")) return;
+    if (!S.status.ai.ready && !await ask("The AI is not configured yet, so nothing will design the board. Start anyway?", { ok: "Start anyway" })) return;
     const p = await api("/api/projects", { method: "POST", body: { prompt } });
     $("#prompt").value = "";
     openProject(p.id);
@@ -1355,7 +1646,7 @@ function init() {
     e.target.value = "";
     if (!picked.length) return;
     let ai = S.status.ai.ready;
-    if (!ai && !confirm("The AI is not configured, so the imported design will be built as it is. Continue?")) return;
+    if (!ai && !await ask("The AI is not configured, so the imported design will be built as it is. Continue?", { ok: "Import" })) return;
     const read = f => new Promise((ok, bad) => {
       const r = new FileReader();
       r.onload = () => ok({ name: f.name, data: String(r.result).split(",", 2)[1] || "" });
@@ -1366,7 +1657,7 @@ function init() {
       const files = await Promise.all(picked.map(read));
       const p = await api("/api/import", { method: "POST", body: { files, ai } });
       openProject(p.id);
-    } catch (err) { alert("Import failed: " + err.message); }
+    } catch (err) { toast("Import failed: " + err.message, "error"); }
   });
   $("#chatForm").addEventListener("submit", async e => {
     e.preventDefault();
@@ -1394,8 +1685,93 @@ function init() {
     } catch (err) { $("#netMsg").textContent = err.message; }
   };
   $("#netSet").onclick = () => { const v = $("#netPassword").value; if (v.length < 6) { $("#netMsg").textContent = "Use at least 6 characters."; return; } setPw(v); };
-  $("#netClear").onclick = () => { if (confirm("Remove the password? Anyone on the network can then use WholeBoard.")) setPw(""); };
+  $("#netClear").onclick = async () => { if (await ask("Remove the password? Anyone on the network can then use WholeBoard.", { ok: "Remove", danger: true })) setPw(""); };
   $("#historyBtn").onclick = () => openHistory().catch(e => { $("#historyList").textContent = e.message; });
+  $("#wsTitle").addEventListener("dblclick", startRename);
+  $("#renameBtn").onclick = startRename;
+  $("#boardSearch").addEventListener("input", renderProjects);
+  $("#stepper").addEventListener("keydown", e => {
+    const map = { ArrowRight: [1], ArrowLeft: [-1], Home: [0, 0], End: [0, allSteps().length - 1] };
+    if (!map[e.key]) return;
+    e.preventDefault();
+    moveStep(...map[e.key]);
+  });
+
+  // the "⋯" menu: board outline, design JSON, folder, delete
+  const menu = $("#moreMenu"), more = $("#moreBtn");
+  const closeMenu = () => { menu.hidden = true; more.setAttribute("aria-expanded", "false"); };
+  more.onclick = e => {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+    more.setAttribute("aria-expanded", String(!menu.hidden));
+    if (!menu.hidden) menu.querySelector("button:not([hidden])").focus();
+  };
+  menu.addEventListener("click", closeMenu);
+  menu.addEventListener("keydown", e => {
+    const items = [...menu.querySelectorAll("button:not([hidden])")], i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    else if (e.key === "Escape") { e.preventDefault(); closeMenu(); more.focus(); }
+  });
+  document.addEventListener("click", e => {
+    if (!menu.hidden && !menu.contains(e.target)) closeMenu();
+    const pop = $("#statusPop");
+    if (pop && !pop.hidden && !pop.contains(e.target)) { pop.hidden = true; $(".chip.summary")?.setAttribute("aria-expanded", "false"); }
+    if (document.body.classList.contains("boards-open") && !e.target.closest("#sidebar, #boardsToggle")) toggleBoards(false);
+  });
+
+  // the boards drawer on narrow screens
+  const toggleBoards = open => {
+    document.body.classList.toggle("boards-open", open);
+    $("#boardsToggle").setAttribute("aria-expanded", String(open));
+    if (open) ($("#boardSearch").hidden ? $("#projectList li[tabindex]") : $("#boardSearch"))?.focus();
+  };
+  $("#boardsToggle").onclick = () => toggleBoards(!document.body.classList.contains("boards-open"));
+
+  // hide or show the chat, remembered in this browser
+  const setChat = hidden => {
+    $(".ws-body").classList.toggle("chat-hidden", hidden);
+    $("#chatToggle").textContent = hidden ? "Show chat" : "Hide chat";
+    $("#chatToggle").setAttribute("aria-pressed", String(hidden));
+    try { localStorage.setItem("wb-chat-hidden", hidden ? "1" : ""); } catch (e) { /* storage blocked */ }
+  };
+  try { setChat(localStorage.getItem("wb-chat-hidden") === "1"); } catch (e) { setChat(false); }
+  $("#chatToggle").onclick = () => setChat(!$(".ws-body").classList.contains("chat-hidden"));
+
+  // desktop notifications (Settings › Appearance)
+  const nt = $("#notifyToggle");
+  const canNotify = "Notification" in window && window.isSecureContext;
+  nt.checked = canNotify && notifyOn() && Notification.permission === "granted";
+  nt.disabled = !canNotify;
+  if (!canNotify) $("#notifyHint").textContent = "The tab's title and icon always change. Desktop notifications need WholeBoard opened as http://localhost on this computer.";
+  nt.onchange = async () => {
+    let on = nt.checked;
+    if (on && Notification.permission !== "granted") on = (await Notification.requestPermission()) === "granted";
+    nt.checked = on;
+    try { localStorage.setItem("wb-notify", on ? "1" : ""); } catch (e) { /* storage blocked */ }
+    if (nt.checked !== on || (!on && Notification.permission === "denied")) $("#notifyHint").textContent = "The browser blocked notifications for this page; allow them in its site settings.";
+  };
+
+  // keyboard shortcuts (press ? for the list)
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape") {
+      if (!menu.hidden) { closeMenu(); more.focus(); }
+      if (document.body.classList.contains("boards-open")) toggleBoards(false);
+      return;
+    }
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.closest("input, textarea, select, [contenteditable='true']") || document.querySelector("dialog[open]")) return;
+    const k = e.key;
+    if (k === "?") $("#keysDialog").showModal();
+    else if (k === "/") { if (S.pid) { setChat(false); $("#chatInput").focus(); } else $("#prompt").focus(); }
+    else if ((k === "ArrowRight" || k === "ArrowLeft") && S.pid) moveStep(k === "ArrowRight" ? 1 : -1);
+    else if ((k === "s" || k === "S") && S.pid) { goStep("summary"); $("#step-summary").focus(); }
+    else if ((k === "c" || k === "C") && S.pid) setChat(!$(".ws-body").classList.contains("chat-hidden"));
+    else if (k === "b" || k === "B") { if (innerWidth / wbZoom() <= 1000) toggleBoards(true); else { $("#boardSearch").hidden = false; $("#boardSearch").focus(); } }
+    else if (k === "n" || k === "N") $("#newBtn").click();
+    else return;
+    e.preventDefault();
+  });
   $("#outlineBtn").onclick = () => $("#outlineFile").click();
   $("#outlineFile").onchange = async ev => {
     const file = ev.target.files[0]; ev.target.value = "";
@@ -1403,27 +1779,27 @@ function init() {
     const buf = new Uint8Array(await file.arrayBuffer());
     let bin = ""; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
     try { await api(`/api/projects/${S.pid}/outline`, { method: "POST", body: { name: file.name, data: btoa(bin) } }); }
-    catch (e) { alert(e.message); }
+    catch (e) { toast(e.message, "error"); }
   };
   $("#clearListBtn").onclick = async () => {
-    if (!confirm("Clear the boards list? The boards and their files stay on disk, and you can show them again.")) return;
+    if (!await ask("Clear the boards list? The boards and their files stay on disk, and you can show them again.", { ok: "Clear the list" })) return;
     await api("/api/projects/clear", { method: "POST", body: {} });
     loadProjects();
   };
   $("#restoreListBtn").onclick = async () => { await api("/api/projects/clear", { method: "POST", body: { restore: true } }); loadProjects(); };
   $("#stopBtn").onclick = () => api(`/api/projects/${S.pid}/cancel`, { method: "POST" });
   $("#deleteBtn").onclick = async () => {
-    if (!confirm("Delete this board and all its files? This cannot be undone.")) return;
-    try { await api(`/api/projects/${S.pid}`, { method: "DELETE" }); showHome(); }
-    catch (e) { alert(e.message); }
+    if (!await ask(`Delete “${$("#wsTitle").textContent}” and all its files? This cannot be undone.`, { ok: "Delete", danger: true })) return;
+    try { await api(`/api/projects/${S.pid}`, { method: "DELETE" }); showHome(); toast("Board deleted.", "ok"); }
+    catch (e) { toast(e.message, "error"); }
   };
   $("#folderBtn").onclick = async () => {
     const r = await api(`/api/projects/${S.pid}/open-folder`, { method: "POST" });
-    if (!r.ok) alert("Folder: " + r.folder);
+    if (!r.ok) toast("The board's folder is " + r.folder);
   };
   $("#editSpecBtn").onclick = async () => {
     const data = await api(`/api/projects/${S.pid}`);
-    if (!data.state.spec) { alert("There is no design yet."); return; }
+    if (!data.state.spec) { toast("There is no design yet."); return; }
     openSpecDialog("design", data.state.spec);
   };
   $("#specSave").onclick = async () => {
@@ -1441,6 +1817,12 @@ function init() {
     const pid = location.hash.slice(1);
     loadProjects();
     if (pid) openProject(pid).catch(() => showHome());
+  });
+  // a pasted or bookmarked board link, or the browser's back button
+  window.addEventListener("hashchange", () => {
+    const pid = location.hash.slice(1);
+    if (pid && pid !== S.pid) openProject(pid).catch(() => showHome());
+    else if (!pid && S.pid) showHome();
   });
 }
 
@@ -1518,4 +1900,31 @@ init();
     grip.addEventListener("pointercancel", end);
     grip.addEventListener("dblclick", () => { ta.style.height = ""; try { localStorage.removeItem(key); } catch (e) { /* storage blocked */ } });
   }
+})();
+
+// ---- the divider between the chat and the build: drag, arrow keys, double-click to reset
+(function split() {
+  const grip = $("#splitGrip"), pane = $("#chatPane"), body = $(".ws-body");
+  const set = w => document.documentElement.style.setProperty("--chat-w", Math.round(w) + "px");
+  const save = () => { try { localStorage.setItem("wb-chat-w", parseFloat(getComputedStyle(pane).width)); } catch (e) { /* storage blocked */ } };
+  const clamp = w => Math.max(300, Math.min(body.clientWidth * 0.7, w));
+  try { const w = parseFloat(localStorage.getItem("wb-chat-w")); if (w > 0) set(w); } catch (e) { /* storage blocked */ }
+  let start = null;
+  grip.addEventListener("pointerdown", e => {
+    start = [e.clientX, pane.getBoundingClientRect().width / wbZoom()];
+    grip.setPointerCapture(e.pointerId); grip.classList.add("drag"); e.preventDefault();
+  });
+  grip.addEventListener("pointermove", e => { if (start) set(clamp(start[1] + (e.clientX - start[0]) / wbZoom())); });
+  const end = () => { if (!start) return; start = null; grip.classList.remove("drag"); save(); };
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
+  grip.addEventListener("keydown", e => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    set(clamp(pane.getBoundingClientRect().width / wbZoom() + (e.key === "ArrowRight" ? 24 : -24))); save();
+  });
+  grip.addEventListener("dblclick", () => {
+    document.documentElement.style.removeProperty("--chat-w");
+    try { localStorage.removeItem("wb-chat-w"); } catch (e) { /* storage blocked */ }
+  });
 })();

@@ -1,6 +1,6 @@
 # Colour themes
 
-Pick a theme from the **Theme** menu at the top of the window. The choice is saved in your browser, so each
+Pick a theme in *Settings → Appearance*. The choice is saved in your browser, so each
 computer (and each browser) keeps its own. The board drawing, plots, the 3D views and the Sim Lab redraw in the new colours straight away.
 
 Every screenshot below shows the same finished board on its *DRC & copper pour* step.

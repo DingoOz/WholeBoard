@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import platform
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -345,7 +346,21 @@ def import_prompt(res: dict) -> str:
 @app.get("/api/projects/{pid}")
 def get_project(pid: str):
     p = _project(pid)
-    return {"state": p.state, "events": p.events}
+    return {"state": p.state, "events": p.events, "title": p.display_title()}
+
+
+@app.patch("/api/projects/{pid}")
+async def rename_project(pid: str, request: Request):
+    """Rename a board; an empty title goes back to the designer's own."""
+    p = _project(pid)
+    title = re.sub(r"\s+", " ", str((await request.json()).get("title") or "")).strip()[:80]
+    with p.lock:
+        if title:
+            p.state["custom_title"] = title
+        else:
+            p.state.pop("custom_title", None)
+        p.save()
+    return p.summary()
 
 
 @app.delete("/api/projects/{pid}")

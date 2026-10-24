@@ -17,6 +17,7 @@
 | JLCPCB quote | PCB + assembly + components + shipping, cheaper drop-in parts, panel options, Mouser and DigiKey for parts JLCPCB cannot fit, OSH Park, PCBWay and Aisler for comparison, a live stock check | Itemised quote you can re-run with other options |
 | AI visual review | The AI looks at the renders like a reviewer and fixes real problems | Review notes |
 | 3D-printed enclosure | The AI designs a box and FreeCAD builds and checks it, or fits the board to a box you already have; heat in the box | 3D preview, collision report, STL/STEP/FreeCAD downloads, drilling templates |
+| Summary | Gathers the finished board on one page | Render, price, a tile per check, the designer's list of things to check before ordering, files |
 | Project report | One PDF with the renders, quote, BOM, simulation, power budget, checks, bring-up steps and schematic | Download |
 
 If a step fails (a pad name is wrong, routing leaves connections open, DRC finds errors), the result goes back to
