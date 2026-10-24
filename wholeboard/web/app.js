@@ -155,6 +155,7 @@ function startRename() {
     try {
       const r = await api(`/api/projects/${S.pid}`, { method: "PATCH", body: { title: t } });
       S.title = h.textContent = r.title;
+      if (S.selStep === "summary") renderStage();
       signal();
       loadProjects();
     } catch (e) { h.textContent = old; toast(e.message, "error"); }
@@ -528,7 +529,7 @@ function renderSummary() {
   const tiles = ["netlist", "schematic", "sim", "drc", "review", "quote", "enclosure"].map(k => {
     const s = S.steps.find(x => x.key === k), st = stepState(k);
     return el("button", { type: "button", class: "check-tile " + stepClass(st), onclick: () => goStep(k) },
-      el("b", {}, s?.title || k), el("span", { title: st.detail || "" }, st.detail || st.status));
+      el("b", {}, s?.title || k), el("span", { title: st.detail || "" }, st.detail || (st.status === "pending" ? "not run" : st.status)));
   });
   frag.append(card("Checks", el("div", { class: "check-grid" }, tiles)));
   if (S.finish) {
