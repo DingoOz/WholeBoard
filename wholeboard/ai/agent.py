@@ -110,6 +110,7 @@ needs a different correction, give the component "cpl": {"rotation": 90, "dx_mm"
 Design spec (the `spec` argument of submit_design)
 {
   "name": "short_snake_case_name",
+  "title": "A short title for the boards list, 2 to 6 words, e.g. Qwiic RGB LED driver",
   "summary": "one paragraph describing the board",
   "board": {"width_mm": 50, "height_mm": 30, "layers": 2, "thickness_mm": 1.6,
             "corner_radius_mm": 1, "mounting_holes": {"diameter_mm": 3.2, "inset_mm": 3.5} or null,

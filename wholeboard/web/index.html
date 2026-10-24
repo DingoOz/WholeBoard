@@ -13,29 +13,16 @@ try { const z = parseFloat(localStorage.getItem("wb-zoom")); if (z > 0) document
 window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</script>
 </head>
 <body>
+<a class="skip-link" href="#stage">Skip to the build</a>
 <header class="topbar">
+  <button class="btn ghost boards-toggle" id="boardsToggle" type="button" aria-label="Boards" aria-controls="sidebar" aria-expanded="false" title="Your boards">☰</button>
   <a class="brand" href="#" id="homeLink"><img src="/static/icon.svg" alt=""><span>WholeBoard</span></a>
   <div class="status-chips" id="statusChips"></div>
   <div class="spacer"></div>
-  <label class="theme-pick" title="Colour theme"><span class="muted">Theme</span>
-    <select id="themeSelect">
-      <option value="auto">Green &amp; gold (match system)</option>
-      <option value="green-gold-dark">Green &amp; gold dark</option>
-      <option value="green-gold-light">Green &amp; gold light</option>
-      <option value="neon">Neon</option>
-      <option value="greyscale">Greyscale</option>
-      <option value="ocean">Ocean</option>
-      <option value="purple">Purple mask</option>
-      <option value="amber">Amber terminal</option>
-      <option value="blueprint">Blueprint</option>
-      <option value="copper">Copper (light)</option>
-      <option value="arctic">Arctic (light)</option>
-    </select>
-  </label>
-  <div class="zoom-pick" title="Zoom the whole interface">
-    <button class="btn ghost" id="zoomOut" type="button" title="Zoom out">−</button>
-    <button class="btn ghost" id="zoomReset" type="button" title="Back to 100 %">100%</button>
-    <button class="btn ghost" id="zoomIn" type="button" title="Zoom in">+</button>
+  <div class="zoom-pick" role="group" aria-label="Zoom">
+    <button class="btn ghost" id="zoomOut" type="button" title="Zoom out (Ctrl+Alt+−)" aria-label="Zoom out">−</button>
+    <button class="btn ghost" id="zoomReset" type="button" title="Back to 100 % (Ctrl+Alt+0)" aria-label="Reset zoom">100%</button>
+    <button class="btn ghost" id="zoomIn" type="button" title="Zoom in (Ctrl+Alt++)" aria-label="Zoom in">+</button>
   </div>
   <button class="btn ghost" id="newBtn" type="button">+ New board</button>
   <button class="btn ghost" id="tourBtn" type="button" title="A short walk through designing a board with WholeBoard">? Take a tour</button>
@@ -43,10 +30,11 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
 </header>
 
 <div class="layout">
-  <aside class="sidebar">
-    <div class="side-head"><h3>Boards</h3>
+  <aside class="sidebar" id="sidebar" aria-label="Your boards">
+    <div class="side-head"><h3 id="boardsHeading">Boards</h3>
       <button class="link-btn" id="clearListBtn" type="button" title="Empty this list. The boards and their files stay on disk.">Clear</button></div>
-    <ul id="projectList" class="project-list"></ul>
+    <input type="search" id="boardSearch" class="board-search" placeholder="Search boards" aria-label="Search boards">
+    <ul id="projectList" class="project-list" aria-labelledby="boardsHeading"></ul>
     <button class="link-btn" id="restoreListBtn" type="button" hidden></button>
   </aside>
 
@@ -73,29 +61,37 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
 
     <section id="workspace" class="workspace" hidden>
       <div class="ws-head">
-        <div class="ws-title"><h2 id="wsTitle"></h2><span class="pill" id="wsStatus"></span><span class="muted" id="wsNote"></span><span class="chip" id="wsUsage" hidden></span></div>
+        <div class="ws-title"><h2 id="wsTitle" title="Double-click to rename"></h2>
+          <button class="link-btn" id="renameBtn" type="button" aria-label="Rename this board" title="Rename">✎</button>
+          <span class="pill" id="wsStatus" role="status"></span><span class="muted" id="wsNote"></span><span class="chip" id="wsUsage" hidden></span></div>
         <div class="ws-actions">
+          <button class="btn ghost" id="chatToggle" type="button" aria-pressed="false" title="Hide or show the chat (C)">Hide chat</button>
           <button class="btn ghost" id="historyBtn" type="button" title="Every build of this board: compare two or rebuild an old one">History</button>
-          <button class="btn ghost" id="outlineBtn" type="button" title="Give the board the shape (and mounting holes) from a DXF drawing, e.g. from your case maker">Board outline (DXF)</button>
-          <input type="file" id="outlineFile" accept=".dxf" hidden>
-          <button class="btn ghost" id="editSpecBtn" type="button">Edit design JSON</button>
-          <button class="btn ghost" id="folderBtn" type="button">Open folder</button>
           <button class="btn danger" id="stopBtn" type="button">Stop</button>
-          <button class="btn ghost" id="deleteBtn" type="button" title="Delete this board and its files">Delete</button>
+          <button class="btn ghost" id="moreBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="moreMenu" aria-label="More actions" title="More actions">⋯</button>
+          <div class="menu" id="moreMenu" role="menu" hidden>
+            <button type="button" role="menuitem" id="outlineBtn" title="Give the board the shape (and mounting holes) from a DXF drawing, e.g. from your case maker">Board outline from DXF…</button>
+            <button type="button" role="menuitem" id="editSpecBtn">Edit design JSON…</button>
+            <button type="button" role="menuitem" id="folderBtn">Open folder</button>
+            <hr>
+            <button type="button" role="menuitem" id="deleteBtn" class="danger" title="Delete this board and its files">Delete board…</button>
+          </div>
+          <input type="file" id="outlineFile" accept=".dxf" hidden>
         </div>
       </div>
       <div class="ws-body">
-        <div class="chat-pane">
-          <div id="chat" class="chat"></div>
+        <div class="chat-pane" id="chatPane">
+          <div id="chat" class="chat" role="log" aria-live="polite" aria-label="Conversation with the designer"></div>
           <div class="resize-grip" data-for="chatInput" data-up title="Drag to resize the message box (double-click to reset)"></div>
           <form id="chatForm" class="chat-form">
             <textarea id="chatInput" rows="2" data-resize="wb-chat-h" placeholder="Message the designer… (Enter to send, Shift+Enter for a new line)"></textarea>
             <button class="btn primary" type="submit">Send</button>
           </form>
         </div>
+        <div class="split-grip" id="splitGrip" role="separator" aria-orientation="vertical" aria-controls="chatPane" aria-label="Resize the chat" tabindex="0" title="Drag to resize the chat (double-click to reset)"></div>
         <div class="stage-pane">
-          <ol id="stepper" class="stepper"></ol>
-          <div id="stage" class="stage"></div>
+          <ol id="stepper" class="stepper" role="tablist" aria-label="Build steps"></ol>
+          <div id="stage" class="stage" role="tabpanel" tabindex="-1"></div>
           <details id="logBox" class="logbox">
             <summary>Tool output <span id="logStep" class="muted"></span></summary>
             <pre id="log"></pre>
@@ -114,6 +110,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
       <button type="button" data-tab="tools">KiCad &amp; TraceMaker</button>
       <button type="button" data-tab="jlc">JLCPCB</button>
       <button type="button" data-tab="net">Network</button>
+      <button type="button" data-tab="look">Appearance</button>
     </div>
     <div class="tab" data-tab="ai">
       <label>Provider
@@ -276,6 +273,25 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
         <label>Machine cost per hour <input name="printing.machine_per_h" type="number" min="0" step="0.1" title="Wear and tear, or a print service's rate; 0 to leave out"></label>
       </div>
     </div>
+    <div class="tab" data-tab="look" hidden>
+      <label>Colour theme <select id="themeSelect">
+          <option value="auto">Green &amp; gold (match system)</option>
+          <option value="green-gold-dark">Green &amp; gold dark</option>
+          <option value="green-gold-light">Green &amp; gold light</option>
+          <option value="neon">Neon</option>
+          <option value="greyscale">Greyscale</option>
+          <option value="ocean">Ocean</option>
+          <option value="purple">Purple mask</option>
+          <option value="amber">Amber terminal</option>
+          <option value="blueprint">Blueprint</option>
+          <option value="copper">Copper (light)</option>
+          <option value="arctic">Arctic (light)</option>
+        </select></label>
+      <p class="hint">The theme and zoom are kept in this browser and change straight away.</p>
+      <label class="check"><input type="checkbox" id="notifyToggle"> Tell me when a board needs an answer or finishes, while WholeBoard is in the background</label>
+      <p class="hint" id="notifyHint">The tab's title and icon always change. This also shows a desktop notification.</p>
+      <p class="hint">Keyboard shortcuts: press <kbd>?</kbd> anywhere to see them.</p>
+    </div>
     <div class="tab" data-tab="net" hidden>
       <p class="hint">Start WholeBoard with <code>--host 0.0.0.0</code> to use it from other computers on your network.
         A password stops anyone else on the network from using it (and your AI key). This computer never needs it.</p>
@@ -319,6 +335,36 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
     </div>
   </form>
 </dialog>
+
+<dialog id="askDialog" class="modal small" aria-labelledby="askText">
+  <form method="dialog">
+    <p id="askText"></p>
+    <div class="modal-actions">
+      <button class="btn ghost" value="cancel" type="submit">Cancel</button>
+      <button class="btn primary" value="ok" type="submit" id="askOk">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="keysDialog" class="modal small" aria-labelledby="keysTitle">
+  <form method="dialog">
+    <h2 id="keysTitle">Keyboard shortcuts</h2>
+    <table class="keys"><tbody>
+      <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Previous or next build step</td></tr>
+      <tr><td><kbd>S</kbd></td><td>Summary of the board</td></tr>
+      <tr><td><kbd>/</kbd></td><td>Write to the designer</td></tr>
+      <tr><td><kbd>C</kbd></td><td>Hide or show the chat</td></tr>
+      <tr><td><kbd>B</kbd></td><td>Search your boards</td></tr>
+      <tr><td><kbd>N</kbd></td><td>New board</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>+</kbd> / <kbd>−</kbd> / <kbd>0</kbd></td><td>Zoom in, out, back to 100 %</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Close a dialog or menu</td></tr>
+      <tr><td><kbd>?</kbd></td><td>This list</td></tr>
+    </tbody></table>
+    <div class="modal-actions"><button class="btn primary" value="cancel" type="submit">Close</button></div>
+  </form>
+</dialog>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 
 <script src="/static/board.js"></script>
 <script src="/static/mesh3d.js"></script>

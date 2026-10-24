@@ -82,6 +82,7 @@ class Project:
         with self.lock:
             self.state["status"] = status
             self.state["status_note"] = note
+            self.state["updated"] = time.time()
             self.save()
         self.emit({"type": "status", "status": status, "note": note})
 
@@ -107,10 +108,28 @@ class Project:
         rel = path.resolve().relative_to(self.root.resolve()).as_posix()
         return f"/api/projects/{self.id}/files/{rel}?v={int(time.time() * 1000)}"
 
+    def display_title(self) -> str:
+        """The name the user gave it, else the designer's title, else the design's name, else the request."""
+        s, spec = self.state, self.state.get("spec") or {}
+        if s.get("custom_title"):
+            return s["custom_title"]
+        if spec.get("title"):
+            return str(spec["title"])
+        if spec.get("name") and spec["name"] != "board":
+            words = str(spec["name"]).replace("_", " ").replace("-", " ").split()
+            return " ".join(words)[:1].upper() + " ".join(words)[1:]
+        return s.get("title") or "New board"
+
+    def thumbnail(self) -> str | None:
+        """The first 3D render of the latest build, for the boards list."""
+        images = ((self.state.get("visuals") or {}).get("outputs:images") or {}).get("images") or []
+        return images[0].get("url") if images else None
+
     def summary(self) -> dict:
         s = self.state
-        return {"id": s["id"], "title": s.get("title"), "status": s.get("status"),
-                "created": s.get("created"), "total": (s.get("quote") or {}).get("total"),
+        return {"id": s["id"], "title": self.display_title(), "prompt": s.get("prompt"), "status": s.get("status"),
+                "created": s.get("created"), "updated": s.get("updated") or s.get("created"),
+                "total": (s.get("quote") or {}).get("total"), "thumb": self.thumbnail(),
                 "hidden": bool(s.get("hidden"))}
 
 

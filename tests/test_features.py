@@ -167,6 +167,35 @@ def test_clearing_the_boards_list_keeps_the_files(own_config, tmp_path, monkeypa
     assert not c.get("/api/projects").json()[0]["hidden"]
 
 
+def test_board_titles_and_renaming(own_config, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from wholeboard import project, server
+    monkeypatch.setattr(config, "load", lambda: {"projects_dir": str(tmp_path / "boards")})
+    monkeypatch.setattr(server, "manager", project.Manager())
+    p = server.mgr().create("I would like a board that has 4 rgb leds on it and can connect to i2c via qwiic")
+    assert p.display_title().startswith("I would like")                       # nothing better yet
+    p.state["spec"] = {"name": "qwiic_rgb4_pca9685"}
+    assert p.display_title() == "Qwiic rgb4 pca9685"                         # the design's name
+    p.state["spec"]["title"] = "Qwiic RGB LED driver"
+    assert p.display_title() == "Qwiic RGB LED driver"                       # the designer's title
+    c = TestClient(server.app)
+    assert c.patch(f"/api/projects/{p.id}", json={"title": "  Desk   lamp "}).json()["title"] == "Desk lamp"
+    assert c.get(f"/api/projects/{p.id}").json()["title"] == "Desk lamp"
+    assert p.state["prompt"].startswith("I would like")                      # the request is kept
+    assert c.patch(f"/api/projects/{p.id}", json={"title": ""}).json()["title"] == "Qwiic RGB LED driver"
+
+
+def test_copper_only_parts_are_not_bought():
+    from wholeboard import design
+    from wholeboard.jlc import quote
+    spec = {"name": "t", "board": {"width_mm": 20, "height_mm": 20, "layers": 2}, "nets": [],
+            "components": [{"ref": "R1", "value": "10k", "footprint": "Resistor_SMD:R_0603_1608Metric", "lcsc": "C25804"},
+                           {"ref": "JP1", "value": "A0", "footprint": "Jumper:SolderJumper-2_P1.3mm_Open_RoundedPad1.0x1.5mm"},
+                           {"ref": "TP1", "value": "GND", "footprint": "TestPoint:TestPoint_Pad_D1.5mm"}]}
+    assert [r["refs"] for r in quote.bom_rows(spec)] == [["R1"]]
+    assert design.copper_only("NetTie:NetTie-2_SMD_Pad0.5mm") and not design.copper_only("Jumper:Jumper_2_Open")
+
+
 def test_local_model_search_reads_each_server(monkeypatch):
     from wholeboard.ai import providers
     replies = {

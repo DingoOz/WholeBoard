@@ -3,11 +3,11 @@
 :root[data-theme="green-gold-dark"] {
   --bg: #0e1210; --panel: #151b18; --panel-2: #1b2320; --line: #27312c; --text: #e6ebe7; --muted: #8b968f;
   --accent: #37b37b; --accent-2: #e8c15a; --danger: #ef6a63; --warn: #e0a23a; --ok: #37b37b; --info: #6aa5f5;
-  --board-bg: #0f1512; --board-mask: #1f4a35; --on-accent: #fff; --shadow: 0 1px 2px rgba(0,0,0,.3); color-scheme: dark;
+  --board-bg: #0f1512; --board-mask: #1f4a35; --on-accent: #07150e; --shadow: 0 1px 2px rgba(0,0,0,.3); color-scheme: dark;
 }
 :root[data-theme="green-gold-light"] {
-  --bg: #f5f6f4; --panel: #ffffff; --panel-2: #f0f2ef; --line: #dfe3dd; --text: #1b211d; --muted: #6a736c;
-  --accent: #1d7a52; --accent-2: #e2b545; --danger: #c2413b; --warn: #b7791f; --ok: #1d7a52; --info: #2f6fc6;
+  --bg: #f5f6f4; --panel: #ffffff; --panel-2: #f0f2ef; --line: #dfe3dd; --text: #1b211d; --muted: #68706a;
+  --accent: #1d7a52; --accent-2: #e2b545; --danger: #c2413b; --warn: #966319; --ok: #1d7a52; --info: #2f6fc6;
   --board-bg: #0f1512; --board-mask: #1f4a35; --on-accent: #fff; color-scheme: light;
 }
 
@@ -44,7 +44,7 @@
 :root[data-theme="purple"] {
   --bg: #120c1a; --panel: #1a1225; --panel-2: #231831; --line: #362547; --text: #efe6fa; --muted: #a291b8;
   --accent: #a970ff; --accent-2: #ffd166; --danger: #ff6b8a; --warn: #ffb547; --ok: #5ee0a0; --info: #7fb2ff;
-  --board-bg: #0d0814; --board-mask: #4a2370; --on-accent: #fff; --shadow: 0 1px 2px rgba(0,0,0,.35); color-scheme: dark;
+  --board-bg: #0d0814; --board-mask: #4a2370; --on-accent: #14081f; --shadow: 0 1px 2px rgba(0,0,0,.35); color-scheme: dark;
 }
 
 /* Amber terminal: a retro phosphor screen. */
@@ -69,14 +69,14 @@
 
 /* Copper: a warm light theme. */
 :root[data-theme="copper"] {
-  --bg: #faf5ee; --panel: #fffdf9; --panel-2: #f4ece1; --line: #e6d8c6; --text: #2b1d12; --muted: #85705c;
-  --accent: #b5592a; --accent-2: #2d7d7a; --danger: #c0392b; --warn: #b7791f; --ok: #2f7d4e; --info: #2f6fc6;
+  --bg: #faf5ee; --panel: #fffdf9; --panel-2: #f4ece1; --line: #e6d8c6; --text: #2b1d12; --muted: #7c6856;
+  --accent: #b5592a; --accent-2: #2d7d7a; --danger: #c0392b; --warn: #926019; --ok: #2f7d4e; --info: #2f6fc6;
   --board-bg: #1c130c; --board-mask: #6b3a1c; --on-accent: #fff; color-scheme: light;
 }
 
 /* Arctic: a cool, crisp light theme. */
 :root[data-theme="arctic"] {
-  --bg: #eef3f8; --panel: #ffffff; --panel-2: #e6edf5; --line: #d3dde8; --text: #14202c; --muted: #637487;
-  --accent: #2563eb; --accent-2: #0ea5a4; --danger: #dc2626; --warn: #c2780a; --ok: #15803d; --info: #2563eb;
+  --bg: #eef3f8; --panel: #ffffff; --panel-2: #e6edf5; --line: #d3dde8; --text: #14202c; --muted: #5d6c7e;
+  --accent: #2563eb; --accent-2: #0ea5a4; --danger: #dc2626; --warn: #965d08; --ok: #15803d; --info: #2563eb;
   --board-bg: #101820; --board-mask: #1d3b5c; --on-accent: #fff; color-scheme: light;
 }

@@ -2,7 +2,7 @@
 
 ## A board outline from a DXF
 
-*Board outline (DXF)* reads a drawing from your CAD program: lines, arcs, circles and polylines, in millimetres or
+*Board outline from DXF…* (in the **⋯** menu next to *History*) reads a drawing from your CAD program: lines, arcs, circles and polylines, in millimetres or
 inches. The largest closed shape becomes the board edge, and the circles inside it become mounting holes. The
 designer then builds the board to that shape (`board.outline`).
 
