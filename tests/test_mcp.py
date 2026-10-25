@@ -111,3 +111,26 @@ def test_design_guide_names_the_mcp_tools():
     g = json.loads(json.dumps(_call("design_guide")))["content"][0]["text"]
     assert "record_answer" in g and "simulate_design" in g and "new_board" in g
     assert "ask_user" not in g and "Call simulate to" not in g
+
+
+def test_claude_code_screen(wholeboard, tmp_path, monkeypatch):
+    server, c = wholeboard
+    monkeypatch.setattr(mcp.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/claude")
+    info = c.get("/api/claude-code").json()
+    assert info["claude"] == "/usr/bin/claude" and not info["added"] and not info["local"]
+    assert info["command"].startswith("claude mcp add --scope user wholeboard -- ") and info["command"].endswith(" -m wholeboard.mcp")
+    assert mcp.add_command(9100)[6:8] == ["-e", "WHOLEBOARD_URL=http://127.0.0.1:9100"]    # not the configured port
+    assert c.post("/api/claude-code/add").status_code == 403                               # only from this computer
+
+    ran = []
+    def run(argv, **kw):
+        ran.append(argv)
+        (tmp_path / ".claude.json").write_text(json.dumps({"mcpServers": {"wholeboard": {"command": argv[-3], "args": argv[-2:]}}}))
+        return subprocess.CompletedProcess(argv, 0, "Added stdio MCP server wholeboard", "")
+    monkeypatch.setattr(server.subprocess, "run", run)
+    from fastapi.testclient import TestClient
+    local = TestClient(server.app, client=("127.0.0.1", 50000))
+    assert local.post("/api/claude-code/add").json()["added"]
+    assert ran[0][:6] == ["/usr/bin/claude", "mcp", "add", "--scope", "user", "wholeboard"]
+    assert local.get("/api/claude-code").json()["added"]

@@ -10,6 +10,9 @@ WholeBoard has no releases yet, so changes are grouped by date.
 - Design with Claude Code: the MCP server (`python -m wholeboard.mcp`) now has the designer's tools, so Claude Code
   can design a board on your Claude plan while WholeBoard builds it and shows each step live. It starts or opens a
   board, records your answers, and gets messages typed in WholeBoard's chat with its next step.
+- A *Design with Claude Code* screen (from the home page, Workbench setup and Settings → AI) with the steps to
+  set it up: the line that adds WholeBoard to Claude Code for this computer, a button that runs it, and whether
+  Claude Code is installed and has WholeBoard yet.
 - Documentation site (MkDocs Material) with tutorials, how-to guides, generated reference pages, explanation,
   standards and sources, and decision records. Published to GitHub Pages.
 - Clear the boards list without deleting any boards, and show the cleared boards again.

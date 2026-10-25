@@ -10,6 +10,11 @@ key for this. WholeBoard never sees your Claude sign-in: Claude Code calls Whole
 
 ## Set it up
 
+WholeBoard shows these steps for your computer: click *Design from Claude Code instead* under the description box
+on the home page, or *Set up* next to Claude Code in *Workbench setup*. It shows the exact line to add WholeBoard,
+with this computer's paths, and can run it for you (*Add it for me*, only on the computer running WholeBoard). It
+also shows whether Claude Code is installed and already has WholeBoard.
+
 1. Start WholeBoard (`./run.sh`, or `run.bat` on Windows). Claude Code's tools reach it at
    <http://127.0.0.1:8770/>. If it runs on another port, set `WHOLEBOARD_URL` (for example
    `http://127.0.0.1:8799`) in the server's environment.

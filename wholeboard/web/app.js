@@ -86,6 +86,7 @@ async function loadStatus(refresh = false) {
   chips.append(...bad.map(chip), ready ? sum : "", pop,
     chip([st.ai.ready, st.ai.label, st.ai.ready ? "The AI model doing the design" : "AI not configured: open Settings"]));
   renderSetup();
+  loadClaudeCode();
 }
 
 function renderSetup() {
@@ -100,8 +101,84 @@ function renderSetup() {
     row(st.libs.footprints > 0, "KiCad libraries", st.libs.footprints ? `${st.libs.footprints.toLocaleString()} footprints · ${st.libs.footprint_dir}` : "Not found: download them in Settings."),
     row(!!st.freecad_version, "FreeCAD", st.freecad_version ? `${st.freecad_version} · ${st.freecad.split(" ")[0]}` : "Needed for enclosures: install it or download it in Settings."),
     row(!!st.ngspice_version, "ngspice", st.ngspice_version ? `${st.ngspice_version} · ${st.ngspice}` : "Needed for circuit simulation: run the installer, or install it in Settings."),
-    row(st.ai.ready, "AI", st.ai.ready ? st.ai.label : "Add a Claude API key or a local OpenAI-compatible server.", st.ai.ready ? "" : open),
+    row(st.ai.ready, "AI", st.ai.ready ? st.ai.label : "Add a Claude API key or a local OpenAI-compatible server, or design from Claude Code.", st.ai.ready ? "" : open),
+    el("li", {}, el("span", { class: "chip " + (S.cc?.added ? "ok" : "") }, S.cc?.added ? "added" : "optional"),
+      el("span", { class: "k" }, "Claude Code"),
+      el("span", { class: "v" }, S.cc?.added ? "WholeBoard is in your Claude Code: ask it for a board." : "Design boards from Claude Code, on your Claude plan."),
+      el("button", { class: "btn ghost", type: "button", onclick: () => openClaudeCode() }, S.cc?.added ? "How" : "Set up")),
   ));
+}
+
+// ------------------------------------------------------------------ design with Claude Code
+const CC_EXAMPLE = "Design a board with WholeBoard: a USB-C powered ESP32-C3 sensor node with a BME280 on I²C, a status LED and a 4-pin header. About 40 × 30 mm.";
+
+async function loadClaudeCode() {
+  try { S.cc = await api("/api/claude-code"); } catch { return; }
+  renderSetup();
+  if ($("#claudeDialog").open) renderClaudeCode();
+}
+
+// Copy to the clipboard, falling back to a hidden textarea where the page is not a secure origin (another computer over http).
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back */ }
+  const t = el("textarea", { style: "position:fixed;opacity:0" });
+  t.value = text; document.body.append(t); t.select();
+  const ok = document.execCommand("copy");
+  t.remove();
+  return ok;
+}
+
+function cmdBox(text) {
+  const btn = el("button", { class: "btn small", type: "button" }, "Copy");
+  btn.onclick = async () => { btn.textContent = await copyText(text) ? "Copied" : "Select and copy"; setTimeout(() => btn.textContent = "Copy", 2000); };
+  return el("div", { class: "cmd" }, el("code", {}, text), btn);
+}
+
+async function openClaudeCode() {
+  $("#settings").close();
+  renderClaudeCode();
+  $("#claudeDialog").showModal();
+  loadClaudeCode();
+}
+
+function renderClaudeCode() {
+  const cc = S.cc, box = $("#ccSteps");
+  box.innerHTML = "";
+  if (!cc) { box.append(el("li", {}, el("p", {}, "Looking for Claude Code on this computer…"))); return; }
+  const step = (done, title, ...body) => el("li", { class: done ? "done" : "" }, el("h3", {}, title), ...body);
+  const status = (ok, text) => el("span", { class: "chip " + (ok ? "ok" : "warn") }, text);
+  const elsewhere = cc.local ? "" : el("p", {}, "You're viewing WholeBoard from another computer. Do this on the computer running WholeBoard.");
+  let adding = "";
+  if (cc.local && cc.claude && !cc.added) {
+    adding = el("button", { class: "btn primary small", type: "button" }, "Add it for me");
+    adding.onclick = async () => {
+      adding.disabled = true; adding.textContent = "Adding…";
+      try {
+        await api("/api/claude-code/add", { method: "POST" });
+        toast("WholeBoard is added to Claude Code. Start a new Claude Code session to use it.", "ok");
+      } catch (e) { toast(e.message, "error", 12000); }
+      loadClaudeCode();
+    };
+  }
+  const used = cc.last_used ? `Claude Code last worked on a board here ${ago(cc.last_used)} (${cc.boards} board${cc.boards === 1 ? "" : "s"} so far).` : "";
+  box.append(
+    step(!!cc.claude, ["Install Claude Code and sign in", cc.local ? status(!!cc.claude, cc.claude ? "installed" : "not found") : ""],
+      el("p", {}, "Install Claude Code, then run ", el("code", {}, "claude"), " in a terminal once and sign in with your Claude account."),
+      cc.claude ? el("p", {}, "Found at ", el("code", {}, cc.claude), ".") : ""),
+    step(cc.added, ["Add WholeBoard to Claude Code", cc.local ? status(cc.added, cc.added ? "added" : "not yet") : ""],
+      el("p", {}, "Once only. Run this in a terminal, or let WholeBoard do it:"),
+      cmdBox(cc.command), elsewhere,
+      adding ? el("div", { class: "row" }, adding) : ""),
+    step(true, ["Keep WholeBoard running", status(true, "running")],
+      el("p", {}, "Claude Code reaches it at ", el("code", {}, cc.url), ". Start a new Claude Code session after adding it, or check it with ", el("code", {}, "/mcp"), ".")),
+    step(!!cc.last_used, "Ask Claude Code for a board",
+      el("p", {}, "Describe the board and mention WholeBoard. For example:"),
+      cmdBox(CC_EXAMPLE),
+      el("p", {}, "Claude Code asks you its questions in the terminal and gives you the board's link.")),
+    step(!!cc.last_used, "Watch it here",
+      el("p", {}, "The board appears in your list as it is designed. Type in its chat to steer it: Claude Code reads your message with its next step. Stop ends a build."),
+      used ? el("p", {}, used) : ""),
+  );
 }
 
 function renderExamples() {
@@ -1566,6 +1643,7 @@ function init() {
   $("#newBtn").onclick = () => { showHome(); $("#prompt").focus(); };
   $("#settingsBtn").onclick = () => openSettings();
   $("#tourBtn").onclick = () => startTour();
+  document.querySelectorAll("[data-claude-code]").forEach(b => b.onclick = () => openClaudeCode());
   $("#saveSettings").onclick = () => saveSettings();
   $("#settingsForm").querySelector('[name="ai.provider"]').onchange = syncShow;
   document.querySelectorAll("#settingsTabs button").forEach(b => b.onclick = () => {

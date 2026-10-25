@@ -2,8 +2,8 @@
 
     python -m wholeboard.mcp            # speaks MCP over stdio
 
-Add it to Claude Code with:  claude mcp add wholeboard -- python -m wholeboard.mcp
-(run from the WholeBoard folder, or give the full path to its Python).
+Add it to Claude Code with:  claude mcp add --scope user wholeboard -- /path/to/WholeBoard/.venv/bin/python -m wholeboard.mcp
+(WholeBoard's "Design with Claude Code" screen shows the line for this computer, and can run it).
 
 Every tool takes "project": a KiCad project folder, or any .kicad_pro, .kicad_sch or .kicad_pcb file in it. The
 project is read with WholeBoard's KiCad importer (the schematic's netlist, the board's outline, layers and copper),
@@ -21,6 +21,8 @@ import contextlib
 import hashlib
 import json
 import os
+import shlex
+import subprocess
 import sys
 import threading
 import time
@@ -364,6 +366,31 @@ def _send(msg: dict) -> None:
     with _out_lock:
         _STDOUT.write(json.dumps(msg) + "\n")
         _STDOUT.flush()
+
+
+# ---------------------------------------------------------------- adding it to Claude Code (for WholeBoard's page)
+def add_command(port: int | None = None) -> list[str]:
+    """`claude mcp add` for this WholeBoard: its own Python, and its port when that is not the configured one."""
+    argv = ["claude", "mcp", "add", "--scope", "user", "wholeboard"]
+    if port and port != int(config.load().get("port", 8770)):
+        argv += ["-e", f"WHOLEBOARD_URL=http://127.0.0.1:{port}"]
+    return argv + ["--", sys.executable, "-m", "wholeboard.mcp"]
+
+
+def shell_line(argv: list[str]) -> str:
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+
+def added() -> bool:
+    """Whether Claude Code (on this computer, for this user) already has this MCP server, in any scope."""
+    try:
+        cfg = json.loads((Path.home() / ".claude.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    scopes = [cfg.get("mcpServers") or {}] + [p.get("mcpServers") or {} for p in (cfg.get("projects") or {}).values()
+                                               if isinstance(p, dict)]
+    return any("wholeboard.mcp" in (s.get("args") or []) for servers in scopes for s in servers.values()
+               if isinstance(s, dict))
 
 
 def handle(msg: dict) -> dict | None:

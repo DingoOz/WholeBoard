@@ -55,6 +55,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
             <button class="btn primary" type="submit">Design it →</button>
           </div>
         </form>
+        <p class="alt-route">Have a Claude plan? <button class="link-btn" type="button" data-claude-code>Design from Claude Code instead →</button></p>
       </div>
       <div class="setup card" id="setup"></div>
     </section>
@@ -127,6 +128,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
       <div id="localModels" class="local-models" hidden></div>
       <div data-show="ai.provider=anthropic">
         <label>Anthropic API key <input name="ai.anthropic_api_key" type="password" autocomplete="off" placeholder="sk-ant-… (or set ANTHROPIC_API_KEY)"></label>
+        <p class="hint">No API key, but a Claude plan? <button class="link-btn" type="button" data-claude-code>Design from Claude Code</button> instead: it uses your plan, not this setting.</p>
         <label>Model <span class="with-btn"><input name="ai.anthropic_model" list="claudeModels"><button class="btn" type="button" data-list-models="claudeModels">List models</button></span></label>
         <datalist id="claudeModels"><option value="claude-opus-5-5"><option value="claude-fable-5-1"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"></datalist>
         <label>Effort
@@ -360,6 +362,16 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
       <tr><td><kbd>Esc</kbd></td><td>Close a dialog or menu</td></tr>
       <tr><td><kbd>?</kbd></td><td>This list</td></tr>
     </tbody></table>
+    <div class="modal-actions"><button class="btn primary" value="cancel" type="submit">Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="claudeDialog" class="modal" aria-labelledby="claudeTitle">
+  <form method="dialog">
+    <h2 id="claudeTitle">Design with Claude Code</h2>
+    <p class="hint">Claude Code can design boards with WholeBoard's tools, on your Claude plan, with no API key. It builds
+      each board here, so you watch every step on this page.</p>
+    <ol class="cc-steps" id="ccSteps"></ol>
     <div class="modal-actions"><button class="btn primary" value="cancel" type="submit">Close</button></div>
   </form>
 </dialog>
