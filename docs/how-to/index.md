@@ -14,5 +14,6 @@ Short recipes for one job each.
 - [Order the board](order.md)
 - [Build and flash the firmware](firmware.md)
 - [Use the checks from other agents (MCP)](mcp.md)
+- [Design with Claude Code](claude-code.md) on your Claude plan
 - [Run the benchmark](benchmark.md)
 - [Add your own building block](add-block.md)

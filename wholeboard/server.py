@@ -254,8 +254,26 @@ async def create_project(request: Request):
     if not prompt:
         raise HTTPException(400, "describe the board first")
     p = mgr().create(prompt)
-    _agent(p, request).start(prompt)
-    return p.summary()
+    if body.get("driver") == "claude-code":
+        _agent(p, request).adopt(prompt)
+    else:
+        _agent(p, request).start(prompt)
+    return {**p.summary(), "url": f"{str(request.base_url).rstrip('/')}/#{p.id}"}
+
+
+@app.post("/api/projects/{pid}/tool")
+async def outside_tool(pid: str, request: Request):
+    """One designer tool call from Claude Code (through `python -m wholeboard.mcp`), run here so the page follows it."""
+    p = _project(pid)
+    body = await request.json()
+    try:
+        return await asyncio.to_thread(_agent(p, request).run_outside, str(body.get("name")), body.get("args") or {})
+    except agent_mod.UnknownTool as e:
+        raise HTTPException(404, f"no designer tool {e}") from None
+    except agent_mod.Busy as e:
+        raise HTTPException(409, str(e)) from None
+    except Exception as e:  # noqa: BLE001 - the agent sees the error and can fix its call
+        return {"text": f"{type(e).__name__}: {e}", "error": True}
 
 
 @app.post("/api/import")

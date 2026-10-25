@@ -187,6 +187,9 @@ async function openProject(pid) {
   S.project = data.state;
   S.title = $("#wsTitle").textContent = data.title || S.project.title;
   showUsage(S.project.usage);
+  const cc = S.project.driver === "claude-code";
+  $("#chatInput").placeholder = cc ? "Message Claude Code: it reads this with its next step"
+    : "Message the designer… (Enter to send, Shift+Enter for a new line)";
   renderStepper();
   setStatus(S.project.status, S.project.status_note);
   for (const e of data.events) handleEvent(e, true);
@@ -313,7 +316,13 @@ function addFinish(text, replay) {
 
 function showUsage(u) {
   const chip = $("#wsUsage");
-  if (!u || !u.turns) { chip.hidden = true; return; }
+  if (!u || !u.turns) {
+    // a board Claude Code designed: its tokens count against the user's Claude plan, not here
+    chip.hidden = S.project?.driver !== "claude-code";
+    chip.textContent = "Claude Code";
+    chip.title = "Designed in Claude Code through WholeBoard's MCP tools. Its tokens count against your Claude plan.";
+    return;
+  }
   const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
   const tokens = (u.input || 0) + (u.cache_read || 0) + (u.cache_write || 0);
   chip.hidden = false;

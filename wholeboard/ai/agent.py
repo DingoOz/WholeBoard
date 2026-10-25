@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -250,6 +251,61 @@ TOOLS = [
 ]
 
 
+# An outside agent (Claude Code, through `python -m wholeboard.mcp`) talks to the user itself and is the strong model,
+# so it gets every tool but ask_user and consult_expert, plus record_answer to keep the Requirements step. simulate is
+# renamed because the MCP server's own simulate checks a KiCad project.
+OUTSIDE_NAMES = {"simulate": "simulate_design"}
+OUTSIDE_IDLE = "Designing in Claude Code"
+RECORD_ANSWER = _tool("record_answer", "Record a question you asked the user in your conversation and their answer, "
+                      "so the board's Requirements step in WholeBoard shows it.",
+                      {"question": {"type": "string"}, "answer": {"type": "string"}}, ["question", "answer"])
+
+
+def outside_tools() -> list[dict]:
+    return [RECORD_ANSWER] + [{**t, "name": OUTSIDE_NAMES.get(t["name"], t["name"])} for t in TOOLS
+                              if t["name"] not in ("ask_user", "consult_expert")]
+
+
+OUTSIDE_INTRO = """You are designing a printed circuit board in WholeBoard, through its MCP tools. The brief below \
+is the one WholeBoard gives its own designer. Follow it, with these differences:
+- Call new_board with the user's request as soon as they ask for a board, or list_boards and open_board to carry on \
+with one. The other tools work on that board. Give the user the link new_board returns: the board builds there live, \
+with the schematic, simulation, renders, quote and enclosure.
+- You ask the user your questions yourself, in your conversation. Record each answer with record_answer.
+- Messages the user types in WholeBoard's chat arrive in your tool results as user_messages. Treat them as the user \
+speaking.
+- submit_design takes a few minutes. The user can stop it from WholeBoard.
+- Search results are long: keep limit small.
+
+"""
+OUTSIDE_EDITS = [
+    ("ask with ask_user before designing. Ask only what matters, one question per call, offering options when you can.",
+     "ask the user before designing, and record each question and answer with record_answer. Ask only what matters, "
+     "offering options when you can."),
+    ("Call simulate to check", "Call simulate_design to check"),
+    ("When the build succeeds you get renders of the board (if your model can see images).",
+     "When the build succeeds you get renders of the board."),
+]
+
+
+def guide() -> str:
+    """The designer's brief for an outside agent: WholeBoard's own, with its tools as the MCP server names them."""
+    text = SYSTEM
+    for old, new in OUTSIDE_EDITS:
+        if old not in text:
+            raise RuntimeError(f"the designer's brief changed; update OUTSIDE_EDITS for: {old[:40]}")
+        text = text.replace(old, new)
+    return OUTSIDE_INTRO + text
+
+
+class Busy(RuntimeError):
+    pass
+
+
+class UnknownTool(LookupError):
+    pass
+
+
 # OpenAI-compatible models that accept images (others skip the visual review unless ai.vision is "on").
 VISION_MODELS = re.compile(r"gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-5|\bo[134]\b|o[34]-|grok-4|grok-[23].*vision|vision|"
                            r"llava|-vl\b|vl-|qwen.*vl|gemma-?3|pixtral|minicpm-v|llama-?3\.2-?\d*b?-?vision|"
@@ -260,10 +316,19 @@ class Agent:
     def __init__(self, project: Project, view_origin: str | None = None):
         self.p = project
         self.view_origin = view_origin
+        self.outside = False
 
     # ------------------------------------------------------------ lifecycle
     def start(self, user_text: str) -> None:
         p = self.p
+        if p.state.get("driver") == "claude-code" and time.time() - p.state.get("driver_seen", 0) < 1800:
+            # Claude Code is designing this board: it reads the message with its next tool result
+            with p.lock:
+                p.inbox.append(user_text)
+            p.chat("user", user_text)
+            p.chat("system", "Claude Code is designing this board. It gets your message with its next step.")
+            return
+        self.outside = False
         with p.lock:
             if p.worker and p.worker.is_alive():
                 p.inbox.append(user_text)
@@ -361,6 +426,59 @@ class Agent:
             p.set_status("running", f"Working with {p.session.label}")
         p.chat("system", "Reached the turn limit for one run. Send a message to continue.")
         p.set_status("idle", "Turn limit reached")
+
+    # ------------------------------------------------------------ an outside agent
+    def adopt(self, request: str) -> None:
+        """A new board that Claude Code designs: show the request and wait for its tool calls."""
+        p = self.p
+        with p.lock:
+            p.state.update(driver="claude-code", driver_seen=time.time(), ai_label="Claude Code")
+        p.chat("user", request)
+        p.step("brief", "running", "Reading the request")
+        p.set_status("idle", OUTSIDE_IDLE)
+
+    def run_outside(self, name: str, args: dict) -> dict:
+        """One tool call from Claude Code, run in the server so the page follows it live."""
+        p = self.p
+        name = {v: k for k, v in OUTSIDE_NAMES.items()}.get(name, name)
+        if name in ("ask_user", "consult_expert") or name not in {t["name"] for t in TOOLS} | {"record_answer"}:
+            raise UnknownTool(name)
+        me = threading.current_thread()
+        with p.lock:
+            if p.worker and p.worker.is_alive():
+                raise Busy("WholeBoard's own designer is working on this board. Stop it in WholeBoard first.")
+            p.worker = me
+            p.cancel.clear()
+            p.session = None              # WholeBoard's own designer starts again from the current spec next time
+            p.state.update(driver="claude-code", driver_seen=time.time(), ai_label="Claude Code")
+        self.outside = True
+        try:
+            if name == "record_answer":
+                qid = uuid.uuid4().hex[:8]
+                p.emit({"type": "question", "id": qid, "question": str(args["question"]), "options": []})
+                answer(p, qid, str(args["answer"]))
+                out = "Recorded."
+            else:
+                out = self._execute(name, args)
+        except pipeline.Cancelled:
+            p.set_status("stopped", "Stopped by the user")
+            out = "The user stopped this in WholeBoard. Ask them what to do next."
+        finally:
+            with p.lock:
+                if p.worker is me:
+                    p.worker = None
+                pending = p.inbox[:]
+                p.inbox.clear()
+            status, note = p.state.get("status"), p.state.get("status_note")
+            if p.state.get("finished"):
+                if status != "done":
+                    p.set_status("done", "Board ready")
+            elif status != "stopped" and (status, note) != ("idle", OUTSIDE_IDLE):
+                p.set_status("idle", OUTSIDE_IDLE)
+        res = out if isinstance(out, dict) else {"text": out}
+        if pending:
+            res["user_messages"] = pending
+        return res
 
     # ------------------------------------------------------------ tools
     def _execute(self, name: str, args: dict) -> str:
@@ -567,6 +685,8 @@ class Agent:
     def _vision(self) -> bool:
         ai = config.load()["ai"]
         mode = ai.get("vision", "auto")
+        if self.outside:
+            return True
         if mode in ("on", "off"):
             return mode == "on"
         if getattr(self.p.session, "vision_failed", False):
@@ -610,7 +730,7 @@ class Agent:
     def _expert(self, kind: str, text: str) -> str | None:
         """Ask the expert model, if one is set up; show its answer and count its cost."""
         cfg = expert.settings(config.load()["ai"])
-        if not cfg:
+        if not cfg or self.outside:
             return None
         p = self.p
         labels = {"plan": "planning the design", "review": "reviewing the board", "stuck": "looking at the failed builds",
