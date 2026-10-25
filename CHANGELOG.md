@@ -38,6 +38,8 @@ WholeBoard has no releases yet, so changes are grouped by date.
 
 ### Changed
 
+- When the AI server can't be reached, the message says why: nothing is listening at that address, or something in
+  between (such as a proxy or port forwarder) dropped the connection before the model replied.
 - Fewer controls in the board header: the outline, design JSON, folder and delete moved to a **⋯** menu, the tool
   status folds into one *Workbench ready* chip, and the colour theme moved to *Settings → Appearance*.
 - Steps that finish with warnings show amber. Answered questions fold down, and the designer's final notes fold
