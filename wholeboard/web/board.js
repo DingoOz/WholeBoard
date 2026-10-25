@@ -76,12 +76,19 @@ class BoardView {
   fit() {
     if (!this.w) this._resize();
     const [x0, y0, x1, y1] = this.bounds();
-    const pad = 6;
-    const s = Math.min((this.w - 40) / (x1 - x0 + pad * 2), (this.h - 80) / (y1 - y0 + pad * 2));
+    const pad = 6, bar = this.opts.compact ? 0 : 36;     // a compact view has no layer bar to leave room for
+    const s = Math.min((this.w - (bar ? 40 : 16)) / (x1 - x0 + pad * 2), (this.h - (bar ? 80 : 16)) / (y1 - y0 + pad * 2));
     this.scale = Math.max(0.5, s);
     this.ox = this.w / 2 - ((x0 + x1) / 2) * this.scale;
-    this.oy = (this.h - 36) / 2 - ((y0 + y1) / 2) * this.scale;
+    this.oy = (this.h - bar) / 2 - ((y0 + y1) / 2) * this.scale;
     this.draw();
+  }
+
+  // stop following resizes, theme and zoom changes, for a view that is being replaced
+  destroy() {
+    this.ro.disconnect();
+    window.removeEventListener("wb-theme", this._onTheme);
+    window.removeEventListener("wb-zoom", this._onZoom);
   }
 
   _bindEvents() {

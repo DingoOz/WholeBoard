@@ -66,6 +66,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
           <button class="link-btn" id="renameBtn" type="button" aria-label="Rename this board" title="Rename">✎</button>
           <span class="pill" id="wsStatus" role="status"></span><span class="muted" id="wsNote"></span><span class="chip" id="wsUsage" hidden></span></div>
         <div class="ws-actions">
+          <button class="btn ghost" id="liveToggle" type="button" aria-pressed="false" aria-controls="live" title="Show the schematic, the board and the 3D render side by side as they are made (L)">Live view</button>
           <button class="btn ghost" id="chatToggle" type="button" aria-pressed="false" title="Hide or show the chat (C)">Hide chat</button>
           <button class="btn ghost" id="historyBtn" type="button" title="Every build of this board: compare two or rebuild an old one">History</button>
           <button class="btn danger" id="stopBtn" type="button">Stop</button>
@@ -92,6 +93,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
         <div class="split-grip" id="splitGrip" role="separator" aria-orientation="vertical" aria-controls="chatPane" aria-label="Resize the chat" tabindex="0" title="Drag to resize the chat (double-click to reset)"></div>
         <div class="stage-pane">
           <ol id="stepper" class="stepper" role="tablist" aria-label="Build steps"></ol>
+          <div id="live" class="live" role="region" aria-label="Live view" hidden></div>
           <div id="stage" class="stage" role="tabpanel" tabindex="-1"></div>
           <details id="logBox" class="logbox">
             <summary>Tool output <span id="logStep" class="muted"></span></summary>
@@ -356,6 +358,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
       <tr><td><kbd>S</kbd></td><td>Summary of the board</td></tr>
       <tr><td><kbd>/</kbd></td><td>Write to the designer</td></tr>
       <tr><td><kbd>C</kbd></td><td>Hide or show the chat</td></tr>
+      <tr><td><kbd>L</kbd></td><td>Live view: schematic, board and 3D side by side</td></tr>
       <tr><td><kbd>B</kbd></td><td>Search your boards</td></tr>
       <tr><td><kbd>N</kbd></td><td>New board</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>+</kbd> / <kbd>−</kbd> / <kbd>0</kbd></td><td>Zoom in, out, back to 100 %</td></tr>

@@ -256,7 +256,9 @@ function showHome() {
 async function openProject(pid) {
   if (S.ws) { S.ws.onclose = null; S.ws.close(); S.ws = null; }
   S.pid = pid; S.visuals = {}; S.selStep = null; S.follow = true; S.lastSeq = 0; S.logs = []; S.questions = {};
-  S.qa = []; S.pending.clear(); S.finish = null;
+  S.qa = []; S.pending.clear(); S.finish = null; S.liveBoard = null;
+  for (const k in liveShown) { liveShown[k]?.view?.destroy(); delete liveShown[k]; }
+  $("#live").innerHTML = "";
   $("#home").hidden = true; $("#workspace").hidden = false;
   $("#chat").innerHTML = ""; $("#log").textContent = "";
   history.replaceState(null, "", "#" + pid);
@@ -274,6 +276,7 @@ async function openProject(pid) {
   const built = S.project.steps.outputs?.status === "done" && S.project.status !== "running";
   if (!S.selStep) selectStep(built ? "summary" : lastStepWithVisual() || "brief", false);
   else renderStage();
+  renderLive();
   signal();
   loadProjects();
   connect();
@@ -314,13 +317,14 @@ function handleEvent(e, replay) {
     case "simlab": if (!replay && e.action === "video") { S.simlabVideo = true; S.follow = false; selectStep("sim", true); } break;
     case "visual":
       (S.visuals[e.step] ||= {})[e.kind] = e;
+      if (e.kind === "board") S.liveBoard = e;
       if (e.step === "quote") updateStep("summary");
       if (e.kind === "viewer" && !replay) S.liveViewer = true;
       if (!replay && S.follow) selectStep(e.step, false);
       else if (S.selStep === e.step) renderStage();
       break;
   }
-  if (!replay) { scrollChat(); signal(); }
+  if (!replay) { scrollChat(); signal(); if (["visual", "step", "status"].includes(e.type)) renderLive(); }
 }
 
 function scrollChat() { const c = $("#chat"); c.scrollTop = c.scrollHeight; }
@@ -557,6 +561,95 @@ function renderStage() {
     if (first?.dataset) first.dataset.kind = kind;
     stage.append(node);
   }
+}
+
+// ------------------------------------------------------------------ live view
+// The schematic, the board and the 3D render side by side, each replaced as soon as a newer one is made.
+const LIVE = [
+  { key: "sch", title: "Schematic", steps: ["schematic"], wait: "Drawn after the design check." },
+  { key: "pcb", title: "Board", steps: ["layout", "place", "route", "drc"], wait: "Shown once the footprints are on the board." },
+  { key: "3d", title: "3D", steps: ["outputs"], wait: "Rendered after routing." },
+];
+const liveShown = {};    // tile key -> what it shows now, so a tile is only rebuilt when that changes
+
+function liveSource(key) {
+  if (key === "sch") { const v = S.visuals.schematic?.svg; return v && { id: v.url, step: "schematic", v }; }
+  if (key === "pcb") {
+    const viewer = S.visuals.route?.viewer;
+    if (viewer && S.liveViewer && S.project.steps.route?.status === "running") return { id: "viewer" + viewer.seq, step: "route", v: viewer, viewer: true };
+    const v = S.liveBoard;
+    return v && { id: v.url, step: v.step, v };
+  }
+  const v = S.visuals.outputs?.images;
+  return v?.images?.length && { id: v.images.map(i => i.url).join(), step: "outputs", v };
+}
+
+function liveBody(key, src) {
+  if (key === "sch") {
+    const box = el("div", { class: "zoomimg" }), img = el("img", { src: src.v.url, alt: "Schematic" });
+    box.append(img); zoomable(box, img);
+    return box;
+  }
+  if (key === "pcb" && src.viewer) {
+    const url = `${location.protocol}//${location.hostname}:${src.v.port}/` + (src.v.token ? `?token=${encodeURIComponent(src.v.token)}` : "");
+    return el("iframe", { class: "viewer-frame", src: url, title: "TraceMaker routing live" });
+  }
+  if (key === "pcb") {
+    const host = el("div");
+    fetch(src.v.url).then(r => r.json()).then(geo => {
+      if (liveShown.pcb?.id !== src.id) return;      // a newer board arrived while this one loaded
+      liveShown.pcb.view = new BoardView(host, geo, { compact: true, ratsnest: src.step === "place" || src.step === "layout" });
+    });
+    return host;
+  }
+  const imgs = src.v.images, iso = imgs.find(i => i.view === "iso") || imgs[0];
+  const img = el("img", { class: "live-render", src: iso.url, alt: "3D render, " + iso.view });
+  const views = el("div", { class: "live-views" }, imgs.map(i => el("button", {
+    class: "chip toggle" + (i === iso ? " on" : ""), type: "button", onclick: ev => {
+      img.src = i.url; img.alt = "3D render, " + i.view;
+      views.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === ev.currentTarget));
+    } }, i.view)));
+  return el("div", { class: "live-3d" }, img, views);
+}
+
+function renderLive() {
+  const box = $("#live");
+  if (box.hidden || !S.project) return;
+  if (!box.children.length) {
+    for (const t of LIVE) box.append(el("section", { class: "live-tile", "data-live": t.key, "aria-label": t.title },
+      el("h4", {}, el("button", { class: "link-btn live-title", type: "button", title: `Open the ${t.title.toLowerCase()} step` }, t.title),
+        el("span", { class: "live-state" })),
+      el("div", { class: "live-body" })));
+  }
+  for (const t of LIVE) {
+    const tile = box.querySelector(`[data-live="${t.key}"]`), src = liveSource(t.key);
+    const running = t.steps.find(k => S.project.steps[k]?.status === "running");
+    const step = running || src?.step || t.steps[0];
+    tile.querySelector(".live-title").onclick = () => goStep(step);
+    // a build is under way and has not reached this tile's steps yet: what it shows is from the build before
+    const stale = !running && src && S.project.status === "running" && t.steps.every(k => (S.project.steps[k]?.status || "pending") === "pending");
+    tile.classList.toggle("running", !!running);
+    tile.classList.toggle("stale", !!stale);
+    const st = tile.querySelector(".live-state");
+    st.textContent = running ? (src?.viewer ? "routing now" : src ? "updating…" : "working…") : stale ? "from the last build" : src ? src.v.title : "";
+    st.title = st.textContent;
+    if (liveShown[t.key]?.id === (src?.id || null)) continue;
+    liveShown[t.key]?.view?.destroy();
+    liveShown[t.key] = { id: src?.id || null };
+    const body = tile.querySelector(".live-body");
+    body.innerHTML = "";
+    body.append(src ? liveBody(t.key, src) : el("p", { class: "live-wait" }, t.wait));
+  }
+}
+
+function setLive(on) {
+  const box = $("#live");
+  box.hidden = !on;
+  $("#liveToggle").setAttribute("aria-pressed", String(on));
+  $("#liveToggle").classList.toggle("on", on);
+  try { localStorage.setItem("wb-live", on ? "1" : ""); } catch (e) { /* storage blocked */ }
+  if (!on) { for (const k in liveShown) { liveShown[k]?.view?.destroy(); delete liveShown[k]; } box.innerHTML = ""; }
+  renderLive();
 }
 
 // The Requirements step: the request, the answers given, and what the designer took from them.
@@ -1824,6 +1917,8 @@ function init() {
   };
   try { setChat(localStorage.getItem("wb-chat-hidden") === "1"); } catch (e) { setChat(false); }
   $("#chatToggle").onclick = () => setChat(!$(".ws-body").classList.contains("chat-hidden"));
+  try { setLive(localStorage.getItem("wb-live") === "1"); } catch (e) { setLive(false); }
+  $("#liveToggle").onclick = () => setLive($("#live").hidden);
 
   // desktop notifications (Settings › Appearance)
   const nt = $("#notifyToggle");
@@ -1854,6 +1949,7 @@ function init() {
     else if ((k === "ArrowRight" || k === "ArrowLeft") && S.pid) moveStep(k === "ArrowRight" ? 1 : -1);
     else if ((k === "s" || k === "S") && S.pid) { goStep("summary"); $("#step-summary").focus(); }
     else if ((k === "c" || k === "C") && S.pid) setChat(!$(".ws-body").classList.contains("chat-hidden"));
+    else if ((k === "l" || k === "L") && S.pid) setLive($("#live").hidden);
     else if (k === "b" || k === "B") { if (innerWidth / wbZoom() <= 1000) toggleBoards(true); else { $("#boardSearch").hidden = false; $("#boardSearch").focus(); } }
     else if (k === "n" || k === "N") $("#newBtn").click();
     else return;
