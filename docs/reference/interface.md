@@ -21,6 +21,15 @@ ticks on that list are kept in your browser for each revision.
 
 A finished board opens on its summary.
 
+## Live view
+
+*Live view* in the board's header adds a strip above the steps with the schematic, the board and the 3D render
+side by side. Each one changes as soon as a newer one is made: the board shows the footprints, then the placed
+parts with their air wires, then TraceMaker routing it live, then the finished copper and pour. A spinner marks
+the one being worked on. During a rebuild, views the build hasn't reached yet are dimmed and marked *from the last
+build*. Click a view's name to open its step. Drag the strip's bottom-right corner to make it taller. WholeBoard
+remembers whether it is on, in this browser.
+
 ## Chat
 
 Drag the divider between the chat and the steps to resize them; double-click it to go back to the default width.
@@ -51,6 +60,7 @@ Press **?** to see these in WholeBoard.
 | S | Summary of the board |
 | / | Write to the designer |
 | C | Hide or show the chat |
+| L | Live view: schematic, board and 3D side by side |
 | B | Search your boards |
 | N | New board |
 | Ctrl+Alt + / − / 0 | Zoom in, out, back to 100 % |

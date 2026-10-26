@@ -5,6 +5,8 @@ gives any agent (Claude Code, Codex and others) WholeBoard's checks on any KiCad
 not: simulation, power budget, impedance, board checks, a JLCPCB quote, a stock check and a bring-up guide.
 The full list is in [MCP tools](../reference/mcp-tools.md).
 
+The same server also lets Claude Code design whole boards in WholeBoard: see [Design with Claude Code](claude-code.md).
+
 ## Add it to Claude Code
 
 ```

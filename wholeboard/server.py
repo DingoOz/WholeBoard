@@ -6,6 +6,7 @@ import asyncio
 import json
 import platform
 import re
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -14,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, auth, config, design, enclosure, ngspice, pipeline, revisions, router
+from . import __version__, auth, config, design, enclosure, mcp, ngspice, pipeline, revisions, router
 from .ai import agent as agent_mod
 from .ai.providers import AIError, make_session
 from .kicad import cli, libs
@@ -254,8 +255,55 @@ async def create_project(request: Request):
     if not prompt:
         raise HTTPException(400, "describe the board first")
     p = mgr().create(prompt)
-    _agent(p, request).start(prompt)
-    return p.summary()
+    if body.get("driver") == "claude-code":
+        _agent(p, request).adopt(prompt)
+    else:
+        _agent(p, request).start(prompt)
+    return {**p.summary(), "url": f"{str(request.base_url).rstrip('/')}/#{p.id}"}
+
+
+@app.post("/api/projects/{pid}/tool")
+async def outside_tool(pid: str, request: Request):
+    """One designer tool call from Claude Code (through `python -m wholeboard.mcp`), run here so the page follows it."""
+    p = _project(pid)
+    body = await request.json()
+    try:
+        return await asyncio.to_thread(_agent(p, request).run_outside, str(body.get("name")), body.get("args") or {})
+    except agent_mod.UnknownTool as e:
+        raise HTTPException(404, f"no designer tool {e}") from None
+    except agent_mod.Busy as e:
+        raise HTTPException(409, str(e)) from None
+    except Exception as e:  # noqa: BLE001 - the agent sees the error and can fix its call
+        return {"text": f"{type(e).__name__}: {e}", "error": True}
+
+
+@app.get("/api/claude-code")
+def claude_code(request: Request):
+    """What the "Design with Claude Code" screen shows: the line that adds WholeBoard, and how far along it is."""
+    seen = [p.state.get("driver_seen") or 0 for p in mgr().projects.values() if p.state.get("driver") == "claude-code"]
+    return {"claude": shutil.which("claude"), "added": mcp.added(),
+            "command": mcp.shell_line(mcp.add_command(request.url.port)),
+            "local": auth.is_local(request.scope), "url": f"http://127.0.0.1:{request.url.port or 80}",
+            "last_used": max(seen, default=None), "boards": len(seen)}
+
+
+@app.post("/api/claude-code/add")
+def claude_code_add(request: Request):
+    """Run `claude mcp add` for the user. Only from this computer: it changes this computer's Claude Code."""
+    if not auth.is_local(request.scope):
+        raise HTTPException(403, "only the computer running WholeBoard can add it to its Claude Code")
+    exe = shutil.which("claude")
+    if not exe:
+        raise HTTPException(404, "Claude Code (the claude command) is not installed on this computer")
+    argv = [exe] + mcp.add_command(request.url.port)[1:]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise HTTPException(500, f"claude mcp add did not run: {e}") from None
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode and not mcp.added():
+        raise HTTPException(500, out or f"claude mcp add exited with {r.returncode}")
+    return {"added": mcp.added(), "output": out}
 
 
 @app.post("/api/import")

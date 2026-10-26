@@ -86,6 +86,7 @@ async function loadStatus(refresh = false) {
   chips.append(...bad.map(chip), ready ? sum : "", pop,
     chip([st.ai.ready, st.ai.label, st.ai.ready ? "The AI model doing the design" : "AI not configured: open Settings"]));
   renderSetup();
+  loadClaudeCode();
 }
 
 function renderSetup() {
@@ -100,8 +101,84 @@ function renderSetup() {
     row(st.libs.footprints > 0, "KiCad libraries", st.libs.footprints ? `${st.libs.footprints.toLocaleString()} footprints · ${st.libs.footprint_dir}` : "Not found: download them in Settings."),
     row(!!st.freecad_version, "FreeCAD", st.freecad_version ? `${st.freecad_version} · ${st.freecad.split(" ")[0]}` : "Needed for enclosures: install it or download it in Settings."),
     row(!!st.ngspice_version, "ngspice", st.ngspice_version ? `${st.ngspice_version} · ${st.ngspice}` : "Needed for circuit simulation: run the installer, or install it in Settings."),
-    row(st.ai.ready, "AI", st.ai.ready ? st.ai.label : "Add a Claude API key or a local OpenAI-compatible server.", st.ai.ready ? "" : open),
+    row(st.ai.ready, "AI", st.ai.ready ? st.ai.label : "Add a Claude API key or a local OpenAI-compatible server, or design from Claude Code.", st.ai.ready ? "" : open),
+    el("li", {}, el("span", { class: "chip " + (S.cc?.added ? "ok" : "") }, S.cc?.added ? "added" : "optional"),
+      el("span", { class: "k" }, "Claude Code"),
+      el("span", { class: "v" }, S.cc?.added ? "WholeBoard is in your Claude Code: ask it for a board." : "Design boards from Claude Code, on your Claude plan."),
+      el("button", { class: "btn ghost", type: "button", onclick: () => openClaudeCode() }, S.cc?.added ? "How" : "Set up")),
   ));
+}
+
+// ------------------------------------------------------------------ design with Claude Code
+const CC_EXAMPLE = "Design a board with WholeBoard: a USB-C powered ESP32-C3 sensor node with a BME280 on I²C, a status LED and a 4-pin header. About 40 × 30 mm.";
+
+async function loadClaudeCode() {
+  try { S.cc = await api("/api/claude-code"); } catch { return; }
+  renderSetup();
+  if ($("#claudeDialog").open) renderClaudeCode();
+}
+
+// Copy to the clipboard, falling back to a hidden textarea where the page is not a secure origin (another computer over http).
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back */ }
+  const t = el("textarea", { style: "position:fixed;opacity:0" });
+  t.value = text; document.body.append(t); t.select();
+  const ok = document.execCommand("copy");
+  t.remove();
+  return ok;
+}
+
+function cmdBox(text) {
+  const btn = el("button", { class: "btn small", type: "button" }, "Copy");
+  btn.onclick = async () => { btn.textContent = await copyText(text) ? "Copied" : "Select and copy"; setTimeout(() => btn.textContent = "Copy", 2000); };
+  return el("div", { class: "cmd" }, el("code", {}, text), btn);
+}
+
+async function openClaudeCode() {
+  $("#settings").close();
+  renderClaudeCode();
+  $("#claudeDialog").showModal();
+  loadClaudeCode();
+}
+
+function renderClaudeCode() {
+  const cc = S.cc, box = $("#ccSteps");
+  box.innerHTML = "";
+  if (!cc) { box.append(el("li", {}, el("p", {}, "Looking for Claude Code on this computer…"))); return; }
+  const step = (done, title, ...body) => el("li", { class: done ? "done" : "" }, el("h3", {}, title), ...body);
+  const status = (ok, text) => el("span", { class: "chip " + (ok ? "ok" : "warn") }, text);
+  const elsewhere = cc.local ? "" : el("p", {}, "You're viewing WholeBoard from another computer. Do this on the computer running WholeBoard.");
+  let adding = "";
+  if (cc.local && cc.claude && !cc.added) {
+    adding = el("button", { class: "btn primary small", type: "button" }, "Add it for me");
+    adding.onclick = async () => {
+      adding.disabled = true; adding.textContent = "Adding…";
+      try {
+        await api("/api/claude-code/add", { method: "POST" });
+        toast("WholeBoard is added to Claude Code. Start a new Claude Code session to use it.", "ok");
+      } catch (e) { toast(e.message, "error", 12000); }
+      loadClaudeCode();
+    };
+  }
+  const used = cc.last_used ? `Claude Code last worked on a board here ${ago(cc.last_used)} (${cc.boards} board${cc.boards === 1 ? "" : "s"} so far).` : "";
+  box.append(
+    step(!!cc.claude, ["Install Claude Code and sign in", cc.local ? status(!!cc.claude, cc.claude ? "installed" : "not found") : ""],
+      el("p", {}, "Install Claude Code, then run ", el("code", {}, "claude"), " in a terminal once and sign in with your Claude account."),
+      cc.claude ? el("p", {}, "Found at ", el("code", {}, cc.claude), ".") : ""),
+    step(cc.added, ["Add WholeBoard to Claude Code", cc.local ? status(cc.added, cc.added ? "added" : "not yet") : ""],
+      el("p", {}, "Once only. Run this in a terminal, or let WholeBoard do it:"),
+      cmdBox(cc.command), elsewhere,
+      adding ? el("div", { class: "row" }, adding) : ""),
+    step(true, ["Keep WholeBoard running", status(true, "running")],
+      el("p", {}, "Claude Code reaches it at ", el("code", {}, cc.url), ". Start a new Claude Code session after adding it, or check it with ", el("code", {}, "/mcp"), ".")),
+    step(!!cc.last_used, "Ask Claude Code for a board",
+      el("p", {}, "Describe the board and mention WholeBoard. For example:"),
+      cmdBox(CC_EXAMPLE),
+      el("p", {}, "Claude Code asks you its questions in the terminal and gives you the board's link.")),
+    step(!!cc.last_used, "Watch it here",
+      el("p", {}, "The board appears in your list as it is designed. Type in its chat to steer it: Claude Code reads your message with its next step. Stop ends a build."),
+      used ? el("p", {}, used) : ""),
+  );
 }
 
 function renderExamples() {
@@ -179,7 +256,9 @@ function showHome() {
 async function openProject(pid) {
   if (S.ws) { S.ws.onclose = null; S.ws.close(); S.ws = null; }
   S.pid = pid; S.visuals = {}; S.selStep = null; S.follow = true; S.lastSeq = 0; S.logs = []; S.questions = {};
-  S.qa = []; S.pending.clear(); S.finish = null;
+  S.qa = []; S.pending.clear(); S.finish = null; S.liveBoard = null;
+  for (const k in liveShown) { liveShown[k]?.view?.destroy(); delete liveShown[k]; }
+  $("#live").innerHTML = "";
   $("#home").hidden = true; $("#workspace").hidden = false;
   $("#chat").innerHTML = ""; $("#log").textContent = "";
   history.replaceState(null, "", "#" + pid);
@@ -187,6 +266,9 @@ async function openProject(pid) {
   S.project = data.state;
   S.title = $("#wsTitle").textContent = data.title || S.project.title;
   showUsage(S.project.usage);
+  const cc = S.project.driver === "claude-code";
+  $("#chatInput").placeholder = cc ? "Message Claude Code: it reads this with its next step"
+    : "Message the designer… (Enter to send, Shift+Enter for a new line)";
   renderStepper();
   setStatus(S.project.status, S.project.status_note);
   for (const e of data.events) handleEvent(e, true);
@@ -194,6 +276,7 @@ async function openProject(pid) {
   const built = S.project.steps.outputs?.status === "done" && S.project.status !== "running";
   if (!S.selStep) selectStep(built ? "summary" : lastStepWithVisual() || "brief", false);
   else renderStage();
+  renderLive();
   signal();
   loadProjects();
   connect();
@@ -234,13 +317,14 @@ function handleEvent(e, replay) {
     case "simlab": if (!replay && e.action === "video") { S.simlabVideo = true; S.follow = false; selectStep("sim", true); } break;
     case "visual":
       (S.visuals[e.step] ||= {})[e.kind] = e;
+      if (e.kind === "board") S.liveBoard = e;
       if (e.step === "quote") updateStep("summary");
       if (e.kind === "viewer" && !replay) S.liveViewer = true;
       if (!replay && S.follow) selectStep(e.step, false);
       else if (S.selStep === e.step) renderStage();
       break;
   }
-  if (!replay) { scrollChat(); signal(); }
+  if (!replay) { scrollChat(); signal(); if (["visual", "step", "status"].includes(e.type)) renderLive(); }
 }
 
 function scrollChat() { const c = $("#chat"); c.scrollTop = c.scrollHeight; }
@@ -313,7 +397,13 @@ function addFinish(text, replay) {
 
 function showUsage(u) {
   const chip = $("#wsUsage");
-  if (!u || !u.turns) { chip.hidden = true; return; }
+  if (!u || !u.turns) {
+    // a board Claude Code designed: its tokens count against the user's Claude plan, not here
+    chip.hidden = S.project?.driver !== "claude-code";
+    chip.textContent = "Claude Code";
+    chip.title = "Designed in Claude Code through WholeBoard's MCP tools. Its tokens count against your Claude plan.";
+    return;
+  }
   const k = n => n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
   const tokens = (u.input || 0) + (u.cache_read || 0) + (u.cache_write || 0);
   chip.hidden = false;
@@ -471,6 +561,95 @@ function renderStage() {
     if (first?.dataset) first.dataset.kind = kind;
     stage.append(node);
   }
+}
+
+// ------------------------------------------------------------------ live view
+// The schematic, the board and the 3D render side by side, each replaced as soon as a newer one is made.
+const LIVE = [
+  { key: "sch", title: "Schematic", steps: ["schematic"], wait: "Drawn after the design check." },
+  { key: "pcb", title: "Board", steps: ["layout", "place", "route", "drc"], wait: "Shown once the footprints are on the board." },
+  { key: "3d", title: "3D", steps: ["outputs"], wait: "Rendered after routing." },
+];
+const liveShown = {};    // tile key -> what it shows now, so a tile is only rebuilt when that changes
+
+function liveSource(key) {
+  if (key === "sch") { const v = S.visuals.schematic?.svg; return v && { id: v.url, step: "schematic", v }; }
+  if (key === "pcb") {
+    const viewer = S.visuals.route?.viewer;
+    if (viewer && S.liveViewer && S.project.steps.route?.status === "running") return { id: "viewer" + viewer.seq, step: "route", v: viewer, viewer: true };
+    const v = S.liveBoard;
+    return v && { id: v.url, step: v.step, v };
+  }
+  const v = S.visuals.outputs?.images;
+  return v?.images?.length && { id: v.images.map(i => i.url).join(), step: "outputs", v };
+}
+
+function liveBody(key, src) {
+  if (key === "sch") {
+    const box = el("div", { class: "zoomimg" }), img = el("img", { src: src.v.url, alt: "Schematic" });
+    box.append(img); zoomable(box, img);
+    return box;
+  }
+  if (key === "pcb" && src.viewer) {
+    const url = `${location.protocol}//${location.hostname}:${src.v.port}/` + (src.v.token ? `?token=${encodeURIComponent(src.v.token)}` : "");
+    return el("iframe", { class: "viewer-frame", src: url, title: "TraceMaker routing live" });
+  }
+  if (key === "pcb") {
+    const host = el("div");
+    fetch(src.v.url).then(r => r.json()).then(geo => {
+      if (liveShown.pcb?.id !== src.id) return;      // a newer board arrived while this one loaded
+      liveShown.pcb.view = new BoardView(host, geo, { compact: true, ratsnest: src.step === "place" || src.step === "layout" });
+    });
+    return host;
+  }
+  const imgs = src.v.images, iso = imgs.find(i => i.view === "iso") || imgs[0];
+  const img = el("img", { class: "live-render", src: iso.url, alt: "3D render, " + iso.view });
+  const views = el("div", { class: "live-views" }, imgs.map(i => el("button", {
+    class: "chip toggle" + (i === iso ? " on" : ""), type: "button", onclick: ev => {
+      img.src = i.url; img.alt = "3D render, " + i.view;
+      views.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === ev.currentTarget));
+    } }, i.view)));
+  return el("div", { class: "live-3d" }, img, views);
+}
+
+function renderLive() {
+  const box = $("#live");
+  if (box.hidden || !S.project) return;
+  if (!box.children.length) {
+    for (const t of LIVE) box.append(el("section", { class: "live-tile", "data-live": t.key, "aria-label": t.title },
+      el("h4", {}, el("button", { class: "link-btn live-title", type: "button", title: `Open the ${t.title.toLowerCase()} step` }, t.title),
+        el("span", { class: "live-state" })),
+      el("div", { class: "live-body" })));
+  }
+  for (const t of LIVE) {
+    const tile = box.querySelector(`[data-live="${t.key}"]`), src = liveSource(t.key);
+    const running = t.steps.find(k => S.project.steps[k]?.status === "running");
+    const step = running || src?.step || t.steps[0];
+    tile.querySelector(".live-title").onclick = () => goStep(step);
+    // a build is under way and has not reached this tile's steps yet: what it shows is from the build before
+    const stale = !running && src && S.project.status === "running" && t.steps.every(k => (S.project.steps[k]?.status || "pending") === "pending");
+    tile.classList.toggle("running", !!running);
+    tile.classList.toggle("stale", !!stale);
+    const st = tile.querySelector(".live-state");
+    st.textContent = running ? (src?.viewer ? "routing now" : src ? "updating…" : "working…") : stale ? "from the last build" : src ? src.v.title : "";
+    st.title = st.textContent;
+    if (liveShown[t.key]?.id === (src?.id || null)) continue;
+    liveShown[t.key]?.view?.destroy();
+    liveShown[t.key] = { id: src?.id || null };
+    const body = tile.querySelector(".live-body");
+    body.innerHTML = "";
+    body.append(src ? liveBody(t.key, src) : el("p", { class: "live-wait" }, t.wait));
+  }
+}
+
+function setLive(on) {
+  const box = $("#live");
+  box.hidden = !on;
+  $("#liveToggle").setAttribute("aria-pressed", String(on));
+  $("#liveToggle").classList.toggle("on", on);
+  try { localStorage.setItem("wb-live", on ? "1" : ""); } catch (e) { /* storage blocked */ }
+  if (!on) { for (const k in liveShown) { liveShown[k]?.view?.destroy(); delete liveShown[k]; } box.innerHTML = ""; }
+  renderLive();
 }
 
 // The Requirements step: the request, the answers given, and what the designer took from them.
@@ -1557,6 +1736,7 @@ function init() {
   $("#newBtn").onclick = () => { showHome(); $("#prompt").focus(); };
   $("#settingsBtn").onclick = () => openSettings();
   $("#tourBtn").onclick = () => startTour();
+  document.querySelectorAll("[data-claude-code]").forEach(b => b.onclick = () => openClaudeCode());
   $("#saveSettings").onclick = () => saveSettings();
   $("#settingsForm").querySelector('[name="ai.provider"]').onchange = syncShow;
   document.querySelectorAll("#settingsTabs button").forEach(b => b.onclick = () => {
@@ -1737,6 +1917,8 @@ function init() {
   };
   try { setChat(localStorage.getItem("wb-chat-hidden") === "1"); } catch (e) { setChat(false); }
   $("#chatToggle").onclick = () => setChat(!$(".ws-body").classList.contains("chat-hidden"));
+  try { setLive(localStorage.getItem("wb-live") === "1"); } catch (e) { setLive(false); }
+  $("#liveToggle").onclick = () => setLive($("#live").hidden);
 
   // desktop notifications (Settings › Appearance)
   const nt = $("#notifyToggle");
@@ -1767,6 +1949,7 @@ function init() {
     else if ((k === "ArrowRight" || k === "ArrowLeft") && S.pid) moveStep(k === "ArrowRight" ? 1 : -1);
     else if ((k === "s" || k === "S") && S.pid) { goStep("summary"); $("#step-summary").focus(); }
     else if ((k === "c" || k === "C") && S.pid) setChat(!$(".ws-body").classList.contains("chat-hidden"));
+    else if ((k === "l" || k === "L") && S.pid) setLive($("#live").hidden);
     else if (k === "b" || k === "B") { if (innerWidth / wbZoom() <= 1000) toggleBoards(true); else { $("#boardSearch").hidden = false; $("#boardSearch").focus(); } }
     else if (k === "n" || k === "N") $("#newBtn").click();
     else return;

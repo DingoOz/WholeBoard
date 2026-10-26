@@ -77,6 +77,23 @@ def _local(cfg: dict) -> bool:
     return any(h in url for h in ("localhost", "127.0.0.1", "0.0.0.0", "192.168.", "10.", ".local"))
 
 
+def unreachable(url: str, e: Exception) -> str:
+    """Why the AI server could not be reached, told apart by the error under the client's "Connection error"."""
+    causes, x = [], e
+    while x is not None and len(causes) < 8:
+        causes.append(type(x).__name__)
+        x = x.__cause__ or x.__context__
+    if "ConnectionRefusedError" in causes or "ConnectError" in causes:
+        return f"Nothing is answering at {url}. Start the AI server, or check its address in Settings."
+    if "RemoteProtocolError" in causes or "ReadError" in causes:
+        return (f"The AI server at {url} dropped the connection before it replied. Something between WholeBoard and "
+                "the model, such as a proxy or port forwarder, may be giving up on slow replies: try the model "
+                "server's own port.")
+    if "APITimeoutError" in causes:
+        return f"The AI server at {url} took too long to reply."
+    return f"Cannot reach the AI server at {url}: {e}"
+
+
 def _validate(schema: dict, data: Any) -> str | None:
     """Minimal check of a tool input against its JSON schema (required keys and types)."""
     if not isinstance(data, dict):
@@ -493,7 +510,7 @@ class OpenAISession:
         except o.NotFoundError as e:
             raise AIError(f"Model {self.model!r} not found on the AI server.") from e
         except o.APIConnectionError as e:
-            raise AIError(f"Cannot reach the AI server at {self.client.base_url}: {e}") from e
+            raise AIError(unreachable(str(self.client.base_url), e)) from e
         except o.APIStatusError as e:
             raise AIError(f"AI server error {e.status_code}: {e.message}") from e
         choice = resp.choices[0]

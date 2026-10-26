@@ -7,6 +7,15 @@ WholeBoard has no releases yet, so changes are grouped by date.
 
 ### Added
 
+- Design with Claude Code: the MCP server (`python -m wholeboard.mcp`) now has the designer's tools, so Claude Code
+  can design a board on your Claude plan while WholeBoard builds it and shows each step live. It starts or opens a
+  board, records your answers, and gets messages typed in WholeBoard's chat with its next step.
+- *Live view* (in the board's header, or press L): the schematic, the board and the 3D render side by side above
+  the steps, each replaced as soon as a newer one is made, with TraceMaker's live router in the board view while it
+  routes.
+- A *Design with Claude Code* screen (from the home page, Workbench setup and Settings → AI) with the steps to
+  set it up: the line that adds WholeBoard to Claude Code for this computer, a button that runs it, and whether
+  Claude Code is installed and has WholeBoard yet.
 - Documentation site (MkDocs Material) with tutorials, how-to guides, generated reference pages, explanation,
   standards and sources, and decision records. Published to GitHub Pages.
 - Clear the boards list without deleting any boards, and show the cleared boards again.
@@ -32,6 +41,8 @@ WholeBoard has no releases yet, so changes are grouped by date.
 
 ### Changed
 
+- When the AI server can't be reached, the message says why: nothing is listening at that address, or something in
+  between (such as a proxy or port forwarder) dropped the connection before the model replied.
 - Fewer controls in the board header: the outline, design JSON, folder and delete moved to a **⋯** menu, the tool
   status folds into one *Workbench ready* chip, and the colour theme moved to *Settings → Appearance*.
 - Steps that finish with warnings show amber. Answered questions fold down, and the designer's final notes fold

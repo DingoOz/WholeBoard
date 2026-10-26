@@ -309,3 +309,39 @@ def test_turn_cost():
     assert turn_cost("qwen", usage, local) == 0.0
     paid = {"provider": "openai", "openai_base_url": "https://api.x.ai/v1", "openai_price_in": 3, "openai_price_out": 15}
     assert turn_cost("grok", {"input": 1_000_000, "output": 0}, paid) == 3.0
+
+
+def test_unreachable_ai_server_says_why():
+    """A dropped connection (a forwarder timing out) reads differently from nothing listening at all."""
+    import socket
+    import threading
+
+    from wholeboard.ai.providers import AIError, OpenAISession
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(5)
+    dropping = f"http://127.0.0.1:{srv.getsockname()[1]}/v1"
+
+    def drop():
+        while True:
+            c, _ = srv.accept()
+            c.recv(65536)
+            c.close()
+    threading.Thread(target=drop, daemon=True).start()
+    free = socket.socket()
+    free.bind(("127.0.0.1", 0))
+    closed = f"http://127.0.0.1:{free.getsockname()[1]}/v1"
+    free.close()
+
+    said = {}
+    for url in (dropping, closed):
+        session = OpenAISession({"openai_base_url": url, "openai_model": "m"}, "system", [])
+        session.client = session.client.with_options(max_retries=0)
+        session.add_user("hi")
+        with pytest.raises(AIError) as e:
+            session.step()
+        said[url] = str(e.value)
+    assert "dropped the connection" in said[dropping] and "forwarder" in said[dropping]
+    assert said[closed].startswith("Nothing is answering at")
+    srv.close()

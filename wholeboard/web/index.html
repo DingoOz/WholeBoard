@@ -55,6 +55,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
             <button class="btn primary" type="submit">Design it →</button>
           </div>
         </form>
+        <p class="alt-route">Have a Claude plan? <button class="link-btn" type="button" data-claude-code>Design from Claude Code instead →</button></p>
       </div>
       <div class="setup card" id="setup"></div>
     </section>
@@ -65,6 +66,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
           <button class="link-btn" id="renameBtn" type="button" aria-label="Rename this board" title="Rename">✎</button>
           <span class="pill" id="wsStatus" role="status"></span><span class="muted" id="wsNote"></span><span class="chip" id="wsUsage" hidden></span></div>
         <div class="ws-actions">
+          <button class="btn ghost" id="liveToggle" type="button" aria-pressed="false" aria-controls="live" title="Show the schematic, the board and the 3D render side by side as they are made (L)">Live view</button>
           <button class="btn ghost" id="chatToggle" type="button" aria-pressed="false" title="Hide or show the chat (C)">Hide chat</button>
           <button class="btn ghost" id="historyBtn" type="button" title="Every build of this board: compare two or rebuild an old one">History</button>
           <button class="btn danger" id="stopBtn" type="button">Stop</button>
@@ -91,6 +93,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
         <div class="split-grip" id="splitGrip" role="separator" aria-orientation="vertical" aria-controls="chatPane" aria-label="Resize the chat" tabindex="0" title="Drag to resize the chat (double-click to reset)"></div>
         <div class="stage-pane">
           <ol id="stepper" class="stepper" role="tablist" aria-label="Build steps"></ol>
+          <div id="live" class="live" role="region" aria-label="Live view" hidden></div>
           <div id="stage" class="stage" role="tabpanel" tabindex="-1"></div>
           <details id="logBox" class="logbox">
             <summary>Tool output <span id="logStep" class="muted"></span></summary>
@@ -127,6 +130,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
       <div id="localModels" class="local-models" hidden></div>
       <div data-show="ai.provider=anthropic">
         <label>Anthropic API key <input name="ai.anthropic_api_key" type="password" autocomplete="off" placeholder="sk-ant-… (or set ANTHROPIC_API_KEY)"></label>
+        <p class="hint">No API key, but a Claude plan? <button class="link-btn" type="button" data-claude-code>Design from Claude Code</button> instead: it uses your plan, not this setting.</p>
         <label>Model <span class="with-btn"><input name="ai.anthropic_model" list="claudeModels"><button class="btn" type="button" data-list-models="claudeModels">List models</button></span></label>
         <datalist id="claudeModels"><option value="claude-opus-5-5"><option value="claude-fable-5-1"><option value="claude-sonnet-5-5"><option value="claude-haiku-5-5"></datalist>
         <label>Effort
@@ -354,12 +358,23 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
       <tr><td><kbd>S</kbd></td><td>Summary of the board</td></tr>
       <tr><td><kbd>/</kbd></td><td>Write to the designer</td></tr>
       <tr><td><kbd>C</kbd></td><td>Hide or show the chat</td></tr>
+      <tr><td><kbd>L</kbd></td><td>Live view: schematic, board and 3D side by side</td></tr>
       <tr><td><kbd>B</kbd></td><td>Search your boards</td></tr>
       <tr><td><kbd>N</kbd></td><td>New board</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>+</kbd> / <kbd>−</kbd> / <kbd>0</kbd></td><td>Zoom in, out, back to 100 %</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>Close a dialog or menu</td></tr>
       <tr><td><kbd>?</kbd></td><td>This list</td></tr>
     </tbody></table>
+    <div class="modal-actions"><button class="btn primary" value="cancel" type="submit">Close</button></div>
+  </form>
+</dialog>
+
+<dialog id="claudeDialog" class="modal" aria-labelledby="claudeTitle">
+  <form method="dialog">
+    <h2 id="claudeTitle">Design with Claude Code</h2>
+    <p class="hint">Claude Code can design boards with WholeBoard's tools, on your Claude plan, with no API key. It builds
+      each board here, so you watch every step on this page.</p>
+    <ol class="cc-steps" id="ccSteps"></ol>
     <div class="modal-actions"><button class="btn primary" value="cancel" type="submit">Close</button></div>
   </form>
 </dialog>

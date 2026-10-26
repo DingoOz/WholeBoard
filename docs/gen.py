@@ -136,15 +136,23 @@ def mcp_page() -> str:
     out = ["# MCP tools\n", NOTE.format(src="wholeboard/mcp.py"),
            "`python -m wholeboard.mcp` serves these tools over stdio (newline-delimited JSON-RPC; protocol versions "
            + ", ".join(f"`{p}`" for p in mcp.PROTOCOLS) + "). See [Use the checks from other agents](../how-to/mcp.md).\n"]
-    for t in mcp.TOOLS:
-        props = t["inputSchema"]["properties"]
-        req = set(t["inputSchema"].get("required") or [])
-        out.append(f"\n## `{t['name']}`\n\n{t['description']}\n\n" + table(
-            ["Argument", "Type", "Required", "Default", "What it is"],
-            [[f"`{k}`", v.get("type"), "yes" if k in req else "", json.dumps(v["default"]) if "default" in v else "",
-              (v.get("description") or "")[:240] + ("…" if len(v.get("description") or "") > 240 else "")]
-             for k, v in props.items()]))
+    sections = [("Checks on any KiCad project", mcp.TOOLS, ""),
+                ("Design a board", mcp.DESIGN_TOOLS, "Claude Code designing a board in WholeBoard, which must be running. "
+                 "See [Design with Claude Code](../how-to/claude-code.md).\n")]
+    for heading, tools, intro in sections:
+        out.append(f"\n## {heading}\n\n{intro}")
+        out += [_mcp_tool(t) for t in tools]
     return "\n".join(out)
+
+
+def _mcp_tool(t: dict) -> str:
+    props = t["inputSchema"]["properties"]
+    req = set(t["inputSchema"].get("required") or [])
+    return f"\n### `{t['name']}`\n\n{t['description']}\n\n" + table(
+        ["Argument", "Type", "Required", "Default", "What it is"],
+        [[f"`{k}`", v.get("type"), "yes" if k in req else "", json.dumps(v["default"]) if "default" in v else "",
+          (v.get("description") or "")[:240] + ("…" if len(v.get("description") or "") > 240 else "")]
+         for k, v in props.items()])
 
 
 # JLCPCB limits and other fabs --------------------------------------------------------------------------------

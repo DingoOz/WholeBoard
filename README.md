@@ -31,7 +31,7 @@ interface opens in your browser.
 The installer sets up Python, KiCad, TraceMaker, FreeCAD, ngspice and KiCad's libraries, asking
 before it installs system packages. `.venv/bin/python -m wholeboard.doctor` shows what is installed.
 Set an AI in *Settings*: Claude, OpenAI, Grok, or a local model through any OpenAI-compatible
-server. Then press **Take a tour**, or follow [Your first board](https://dingooz.github.io/WholeBoard/tutorials/first-board/).
+server. Or [design with Claude Code](https://dingooz.github.io/WholeBoard/how-to/claude-code/) on your Claude plan. Then press **Take a tour**, or follow [Your first board](https://dingooz.github.io/WholeBoard/tutorials/first-board/).
 
 ## What it does
 
