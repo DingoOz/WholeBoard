@@ -39,10 +39,11 @@ def text(layers: int, thickness_mm: float = 1.6, edge_clearance_mm: float | None
     """The .kicad_dru file's contents."""
     L = limits(layers, thickness_mm)
     edge = max(L["edge_clearance"], edge_clearance_mm or 0)
+    # No copper clearance rule: a custom clearance rule replaces the net classes' clearance in KiCad (and in
+    # TraceMaker), so JLCPCB's 0.09 mm would undercut a 0.15 mm class. The board minimum (min_clearance in the
+    # project's design settings, never below JLCPCB's) is the floor instead.
     rules = [
         ("Track width", None, f"(constraint track_width (min {_mm(L['min_track'])}))", None),
-        ("Copper clearance", "A.Type != 'Zone' && B.Type != 'Zone'",
-         f"(constraint clearance (min {_mm(L['min_clearance'])}))", None),
         ("Via drill", "A.Type == 'Via'", f"(constraint hole_size (min {_mm(L['min_via_drill'])}))", None),
         ("Via diameter", "A.Type == 'Via'", f"(constraint via_diameter (min {_mm(L['min_via_diameter'])}))", None),
         ("Via annular ring", "A.Type == 'Via'", f"(constraint annular_width (min {_mm(L['via_annular'])}))", None),
