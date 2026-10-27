@@ -170,3 +170,26 @@ killed by hand before the OOM killer acted, and Claude Code's background shells 
 **WholeBoard side fixed 2026-10-27** (uncommitted): groups with the same impedance, width, gap and kind share one
 class (80 pairs → 1 class here); `tests/test_fab.py` covers it. TraceMaker side open: share caches between classes
 with identical values, bound the total, or size the arrays to the routed windows.
+
+## 16. (Feature gap) Nothing checks the circuit again once the traces are laid out
+
+`wholeboard/pipeline.py`: ngspice runs once, on the schematic netlist before placement (line 198), with ideal wires
+and switching regulators as ideal supplies. After routing, `checks.run` reuses that simulation's per-net currents
+for trace heating, voltage drop and decoupling, and `impedance.check` measures pair widths and lengths. Nothing
+re-simulates with the routed copper, and nothing looks at layout-dependent behaviour of converters or fast buses.
+Ideas, cheapest first:
+
+- **Post-layout re-simulation.** Put each power net's routed copper resistance (already computed by
+  `checks._graph_drop`) into the ngspice netlist as series resistors between the source and each load pin, and
+  simulate again: rail voltages at the real pins, not at an ideal node. On this board: do the 1.22 V core rails
+  hold at the far KSZ9897 pins?
+- **Converter hot-loop check.** For each switching regulator block, the area (and rough inductance) of the loop
+  from input capacitor to switch node to ground return, warned above a limit from the datasheet's layout guidance.
+- **Bus length matching.** Match lengths across a whole bus such as RGMII (TX_CTL/TXD0-3/TXC, RX side the same),
+  not only within a pair; `impedance.check` already measures lengths.
+- **High-speed spacing.** A spacing rule between fast traces (3W or similar), as a stand-in for crosstalk.
+- **Return path.** Warn when a fast or critical trace crosses a void or split in its reference plane; TraceMaker's
+  router already knows where the plane voids are (critical nets over voids, issue #24).
+
+Not proposed: field-solver signal- or power-integrity simulation (openEMS and the like). It is slow, needs IBIS
+models that JLCPCB parts rarely have, and is hard to run unattended; boards that need it belong in a dedicated tool.
