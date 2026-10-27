@@ -476,3 +476,14 @@ kbd { font: 12px var(--mono); padding: 1px 6px; border: 1px solid var(--line); b
   .live { grid-template-columns: repeat(3, 82%); overflow-x: auto; scroll-snap-type: x mandatory; resize: none; }
   .live-tile { scroll-snap-align: start; }
 }
+
+/* Publish to GitHub */
+.pub-done { margin: 0; padding: 8px 10px; border: 1px solid var(--ok); border-radius: 8px; background: color-mix(in srgb, var(--ok) 8%, var(--panel)); font-size: 13px; }
+#publishDialog details summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.pub-files { list-style: none; margin: 6px 0 0; padding: 0; max-height: 220px; overflow: auto; font-size: 12px; }
+.pub-files li { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; border-bottom: 1px solid var(--line); }
+.pub-files code { font: 12px var(--mono); overflow-wrap: anywhere; }
+.pub-files .muted { white-space: nowrap; }
+.pub-readme { margin: 6px 0 0; max-height: 260px; overflow: auto; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+#pubVis { gap: 16px; }

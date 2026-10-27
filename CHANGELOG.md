@@ -7,6 +7,9 @@ WholeBoard has no releases yet, so changes are grouped by date.
 
 ### Added
 
+- Publish a board to GitHub (**⋯ → Publish to GitHub…**): a new repository, private by default, with the KiCad
+  project, the files for JLCPCB, renders, enclosure, firmware and a README. Publishing again adds the latest
+  build as a new commit. Uses the GitHub CLI's sign-in, or a token in *Settings → GitHub*.
 - Design with Claude Code: the MCP server (`python -m wholeboard.mcp`) now has the designer's tools, so Claude Code
   can design a board on your Claude plan while WholeBoard builds it and shows each step live. It starts or opens a
   board, records your answers, and gets messages typed in WholeBoard's chat with its next step.

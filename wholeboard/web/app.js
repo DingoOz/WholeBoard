@@ -1592,6 +1592,53 @@ function zoomable(box, img) {
   box.addEventListener("pointermove", e => { if (!drag) return; const z = wbZoom(); x += (e.clientX - drag[0]) / z; y += (e.clientY - drag[1]) / z; drag = [e.clientX, e.clientY]; apply(); });
 }
 
+// ------------------------------------------------------------------ publish to GitHub
+const bytes = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} kB`;
+
+async function openPublish() {
+  const d = $("#publishDialog"), go = $("#pubGo");
+  $("#pubErr").textContent = ""; $("#pubAccount").textContent = "Checking your GitHub account…";
+  $("#pubDone").hidden = true; go.disabled = true;
+  d.showModal();
+  const [acct, pv] = await Promise.allSettled([api("/api/github"), api(`/api/projects/${S.pid}/publish`)]);
+  const a = acct.value || { ok: false, error: acct.reason?.message };
+  $("#pubAccount").textContent = a.ok ? `Publishing as ${a.login} on GitHub` + (a.source === "gh" ? " (signed in with the gh command)." : " (the token in Settings).") : a.error;
+  if (pv.status === "rejected") { $("#pubErr").textContent = pv.reason.message; return; }
+  const p = pv.value, done = p.published;
+  $("#pubName").value = done ? done.repo.split("/")[1] : p.name;
+  $("#pubDesc").value = p.description;
+  $("#pubNameHint").hidden = !done;
+  if (done) {
+    $("#pubDone").hidden = false;
+    $("#pubDone").replaceChildren("Revision ", String(done.revision), " is on GitHub at ",
+      el("a", { href: done.url, target: "_blank", rel: "noopener" }, done.repo), done.private ? " (private), " : " (public), ", ago(done.published), ".");
+  }
+  const syncGo = () => {
+    const same = done && $("#pubName").value.trim() === done.repo.split("/")[1];
+    go.textContent = same ? `Publish revision ${S.project.revision ?? ""}` : "Create repository";
+    $("#pubVis").hidden = same; $("#pubDesc").disabled = same;
+  };
+  $("#pubName").oninput = syncGo; syncGo();
+  $("#pubFiles summary").textContent = `What goes in it: ${p.files.length} files, ${bytes(p.total)}`;
+  $("#pubFiles ul").replaceChildren(...p.files.map(f => el("li", {}, el("code", {}, f.path), el("span", { class: "muted" }, bytes(f.size)))));
+  $("#pubReadme pre").textContent = p.readme;
+  go.disabled = !a.ok;
+  go.onclick = async () => {
+    const name = $("#pubName").value.trim();
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) { $("#pubErr").textContent = "Use letters, digits, '.', '-' and '_' in the name."; return; }
+    const isPublic = !$("#pubVis").hidden && d.querySelector('[name="pubVis"]:checked').value === "public";
+    if (isPublic && !await ask(`Make “${name}” public? Anyone will be able to see the design, its parts and your original request.`, { ok: "Publish publicly" })) return;
+    $("#pubErr").textContent = "";
+    go.disabled = true; const label = go.textContent; go.textContent = "Publishing…";
+    try {
+      const r = await api(`/api/projects/${S.pid}/publish`, { method: "POST", body: { name, description: $("#pubDesc").value, private: !isPublic } });
+      d.close();
+      S.project.github = r;
+      toast(el("span", {}, "Published to ", el("a", { href: r.url, target: "_blank", rel: "noopener" }, r.repo), "."), "ok", 12000);
+    } catch (e) { $("#pubErr").textContent = e.message; go.textContent = label; go.disabled = false; }
+  };
+}
+
 // ------------------------------------------------------------------ settings
 async function openSettings() {
   const cfg = await api("/api/config");
@@ -1856,6 +1903,12 @@ function init() {
     for (const id of ["#netSet", "#netClear", "#netPassword"]) $(id).disabled = !a.local;
   };
   $("#settingsTabs").addEventListener("click", e => { if (e.target.dataset.tab === "net") netState(); });
+  $("#settingsTabs").addEventListener("click", async e => {
+    if (e.target.dataset.tab !== "github") return;
+    $("#ghState").textContent = "Checking…";
+    const a = await api("/api/github").catch(err => ({ ok: false, error: err.message }));
+    $("#ghState").textContent = a.ok ? `Signed in as ${a.login}` + (a.source === "gh" ? " through the gh command." : " with the token below.") : a.error;
+  });
   const setPw = async password => {
     try {
       const r = await api("/api/auth/password", { method: "POST", body: { password } });
@@ -1976,6 +2029,7 @@ function init() {
     try { await api(`/api/projects/${S.pid}`, { method: "DELETE" }); showHome(); toast("Board deleted.", "ok"); }
     catch (e) { toast(e.message, "error"); }
   };
+  $("#publishBtn").onclick = () => openPublish();
   $("#folderBtn").onclick = async () => {
     const r = await api(`/api/projects/${S.pid}/open-folder`, { method: "POST" });
     if (!r.ok) toast("The board's folder is " + r.folder);

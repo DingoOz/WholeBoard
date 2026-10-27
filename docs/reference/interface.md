@@ -41,6 +41,7 @@ Drag the divider between the chat and the steps to resize them; double-click it 
 |---|---|
 | Board outline from DXF… | [Fit a board to a case](../how-to/case-fit.md) |
 | Edit design JSON… | Change the design by hand and rebuild without the AI |
+| Publish to GitHub… | [Put the latest build in a repository on your GitHub](../how-to/publish-github.md) |
 | Open folder | The board's folder in your file manager |
 | Delete board… | Deletes the board and all its files, after asking |
 

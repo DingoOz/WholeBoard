@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, auth, config, design, enclosure, mcp, ngspice, pipeline, revisions, router
+from . import __version__, auth, config, design, enclosure, mcp, ngspice, pipeline, publish, revisions, router
 from .ai import agent as agent_mod
 from .ai.providers import AIError, make_session
 from .kicad import cli, libs
@@ -304,6 +304,42 @@ def claude_code_add(request: Request):
     if r.returncode and not mcp.added():
         raise HTTPException(500, out or f"claude mcp add exited with {r.returncode}")
     return {"added": mcp.added(), "output": out}
+
+
+@app.get("/api/github")
+def github_account():
+    return publish.account()
+
+
+@app.get("/api/projects/{pid}/publish")
+def publish_preview(pid: str):
+    """What publishing this board to GitHub would put in the repository."""
+    try:
+        return publish.preview(_project(pid))
+    except publish.PublishError as e:
+        raise HTTPException(400, str(e)) from None
+
+
+_publishing: set[str] = set()
+
+
+@app.post("/api/projects/{pid}/publish")
+async def publish_board(pid: str, request: Request):
+    """Create a GitHub repository with the board's latest build, or add a commit to the one it was published to."""
+    p = _project(pid)
+    body = await request.json()
+    if pid in _publishing:
+        raise HTTPException(409, "this board is already being published")
+    _publishing.add(pid)
+    try:
+        info = await asyncio.to_thread(publish.publish, p, (body.get("name") or "").strip() or None,
+                                       (body.get("description") or "").strip() or None, body.get("private", True) is not False)
+    except publish.PublishError as e:
+        raise HTTPException(400, str(e)) from None
+    finally:
+        _publishing.discard(pid)
+    p.chat("system", f"Published revision {info['revision']} to GitHub: {info['url']}")
+    return info
 
 
 @app.post("/api/import")
