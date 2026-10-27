@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start WholeBoard on Linux or macOS. Creates a virtual environment on first run and
-# reinstalls the dependencies whenever pyproject.toml changes.
+# reinstalls the dependencies whenever pyproject.toml changes. Listens on every interface so other
+# computers on the LAN can connect; pass --host 127.0.0.1 to keep it to this machine.
 set -euo pipefail
 cd "$(dirname "$0")"
 PY=${PYTHON:-python3}
@@ -12,4 +13,4 @@ if [ ! -f .venv/.installed ] || [ pyproject.toml -nt .venv/.installed ]; then
   .venv/bin/pip install -e .
   touch .venv/.installed
 fi
-exec .venv/bin/python -m wholeboard "$@"
+exec .venv/bin/python -m wholeboard --host 0.0.0.0 "$@"
