@@ -88,6 +88,15 @@ def _stream(cmd: list[str], log, cancel: threading.Event | None, timeout: float)
                             bufsize=1, env=env)
     timer = threading.Timer(timeout, proc.kill)
     timer.start()
+    done = threading.Event()
+
+    def watch():                      # the router can be quiet for an hour: don't wait for a line to stop it
+        while not done.wait(0.5):
+            if cancel.is_set():
+                proc.kill()
+                return
+    if cancel is not None:
+        threading.Thread(target=watch, daemon=True).start()
     try:
         assert proc.stdout
         for line in proc.stdout:
@@ -99,6 +108,7 @@ def _stream(cmd: list[str], log, cancel: threading.Event | None, timeout: float)
                 break
         return proc.wait()
     finally:
+        done.set()
         timer.cancel()
 
 

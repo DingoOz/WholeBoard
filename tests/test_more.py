@@ -466,6 +466,18 @@ def test_new_blocks_wire_up(bid, tmp_path):
         assert real == [], real
 
 
+def test_stop_ends_a_quiet_router():
+    import sys
+    import threading
+    import time
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    start = time.time()
+    from wholeboard import router
+    router._stream([sys.executable, "-c", "import time; time.sleep(30)"], lambda s: None, cancel, timeout=60)
+    assert time.time() - start < 5                 # it printed nothing, but Stop still ended it
+
+
 def test_ground_pads_left_to_the_pour_go_on_to_drc():
     from wholeboard.pipeline import _left_to_pour
     spec = {"board": {"ground_pour": "GND"}}
