@@ -27,6 +27,15 @@ def _check(p: Project):
         raise Cancelled()
 
 
+def _left_to_pour(rr: dict, spec: dict) -> bool:
+    """Is every open connection a pad of the ground pour's net to a zone? The outer pour, added after routing,
+    joins such pads, and KiCad's DRC (refilling the zones) says whether it did."""
+    net = spec["board"].get("ground_pour")
+    open_ = (rr.get("connections") or 0) - (rr.get("routed") or 0)
+    fails = rr.get("failures") or []
+    return bool(net) and 0 < open_ == len(fails) and all(re.match(rf"{re.escape(net)}: \S+ -> zone\b", f) for f in fails)
+
+
 def _board_visual(p: Project, step: str, pcb: Path, title: str) -> dict:
     geo = geometry.read(pcb)
     out = pcb.parent / f"{pcb.stem}.geo.json"
@@ -252,6 +261,8 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
 
     # ---- 5. routing
     routed = rdir / f"{name}-3-routed.kicad_pcb"
+    # the outer ground pour goes in before routing when TraceMaker can add it, so the router connects pads to it
+    pours = board.ground_pours(spec) if router.route_pours(cfg) else []
     with ROUTE_LOCK:
         port = None
         if cfg["tools"].get("live_viewer") and router.viewer_available(cfg):
@@ -261,15 +272,18 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
         p.step("route", "running", "TraceMaker is routing")
         try:
             rr = router.route(placed, routed, log=lambda s: p.log("route", s), cancel=p.cancel,
-                              view_port=port, embed_origin=view_origin, diff_pairs=impedance.has_pairs(spec))
-            if not rr["complete"] and not p.cancel.is_set():
+                              view_port=port, embed_origin=view_origin, diff_pairs=impedance.has_pairs(spec),
+                              pours=pours)
+            if not rr["complete"] and not p.cancel.is_set() and (pours or not _left_to_pour(rr, spec)):
                 p.log("route", "Not every connection routed; nudging the placement and trying again.")
                 eco = rdir / f"{name}-2b-eco.kicad_pcb"
                 router.place(routed, eco, log=lambda s: p.log("route", s), cancel=p.cancel,
                              mode="eco", scratch=False)
+                if pours:
+                    board.drop_pours(eco)      # poured again for the new copper, not routed against the old fill
                 rr2 = router.route(eco, routed, log=lambda s: p.log("route", s), cancel=p.cancel,
                                    view_port=port, embed_origin=view_origin, reroute=True,
-                                   diff_pairs=impedance.has_pairs(spec))
+                                   diff_pairs=impedance.has_pairs(spec), pours=pours)
                 if (rr2.get("routed") or 0) >= (rr.get("routed") or 0):
                     rr = rr2
         except Exception as e:  # noqa: BLE001
@@ -278,18 +292,26 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
     _check(p)
     _board_visual(p, "route", routed, "Routed copper")
     result["routing"] = {k: rr.get(k) for k in ("routed", "connections", "tracks", "vias", "seconds")}
-    if not rr["complete"]:
+    if not rr["complete"] and not pours and _left_to_pour(rr, spec):
+        n = rr["connections"] - rr["routed"]
+        p.log("route", f"{n} {spec['board']['ground_pour']} pad{'s' * (n > 1)} left to the ground pour; "
+                       "KiCad's DRC checks that the pour reaches them.")
+        p.step("route", "warn", f"{rr['routed']}/{rr['connections']} connections, {n} left to the ground pour, "
+                                f"{rr['vias']} vias")
+    elif not rr["complete"]:
         p.step("route", "error", f"{rr['routed']} of {rr['connections']} connections routed")
         return {**result, "ok": False, "stage": "routing",
                 "errors": [f"Routing left {rr['connections'] - rr['routed']} of {rr['connections']} "
                            "connections open."], "failures": rr["failures"]}
-    p.step("route", "done", f"{rr['routed']}/{rr['connections']} connections, {rr['vias']} vias")
+    else:
+        p.step("route", "done", f"{rr['routed']}/{rr['connections']} connections, {rr['vias']} vias")
 
     # ---- 6. pour + DRC
-    p.step("drc", "running", "Adding the ground pour and running KiCad's DRC")
+    p.step("drc", "running", "Refilling the ground pour and running KiCad's DRC" if pours
+           else "Adding the ground pour and running KiCad's DRC")
     final = rdir / f"{name}.kicad_pcb"
     shutil.copyfile(routed, final)
-    board.add_ground_pour(final, spec)
+    board.add_ground_pour(final, spec)     # only where the router did not pour
     try:
         drc = cli.drc(final, refill=True, save=True)
     except Exception as e:  # noqa: BLE001

@@ -82,3 +82,26 @@ def test_pcb_price_promo_and_area():
     _, big = quote.pcb_price(150, 150, 2, 50, {}, P)
     assert small == P["pcb"]["promo"]["2"]["price"]
     assert big > small
+
+
+@pytest.mark.skipif(not HAVE_LIBS, reason="KiCad libraries not installed")
+def test_add_ground_pour_fills_only_layers_the_router_did_not_pour(tmp_path):
+    out = board.build(SPEC, tmp_path)
+    pcb = Path(out["pcb"])
+    assert board.ground_pours(SPEC) == ["GND@F.Cu", "GND@B.Cu"]
+    text = pcb.read_text()      # as `tracemaker route --pour GND@B.Cu` leaves it
+    pcb.write_text(text.rstrip()[:-1] + '(zone (net 1) (net_name "GND") (layer "B.Cu") (name "tracemaker pour")'
+                   ' (polygon (pts (xy 0 0) (xy 1 0) (xy 1 1)))))\n')
+    assert board.add_ground_pour(pcb, SPEC)
+    zones = [(str(sexpr.find(z, "name")[1]), str(sexpr.find(z, "layer")[1]))
+             for z in sexpr.parse(pcb.read_text()) if sexpr.tag(z) == "zone"]
+    assert sorted(zones) == [("GND_F_Cu", "F.Cu"), ("tracemaker pour", "B.Cu")]
+    assert board.drop_pours(pcb) == 1 and board.drop_pours(pcb) == 0
+
+
+def test_no_pour_entries_when_the_pour_is_turned_off():
+    spec = json.loads(json.dumps(SPEC))
+    spec["board"]["ground_pour"] = None
+    assert board.ground_pours(spec) == []
+    spec["board"]["ground_pour"] = "NO_SUCH_NET"
+    assert board.ground_pours(spec) == []

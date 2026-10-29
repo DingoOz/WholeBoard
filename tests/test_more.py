@@ -464,3 +464,27 @@ def test_new_blocks_wire_up(bid, tmp_path):
         erc = cli.erc(Path(sch["sch"]))
         real = [e for e in erc["errors"] if e["type"] != "pin_not_driven"]    # alone, nothing drives its inputs
         assert real == [], real
+
+
+def test_ground_pads_left_to_the_pour_go_on_to_drc():
+    from wholeboard.pipeline import _left_to_pour
+    spec = {"board": {"ground_pour": "GND"}}
+    rr = {"connections": 5, "routed": 3, "failures": ["GND: C1.2 -> zone  (search budget)",
+                                                      "GND: U1.84 -> zone  (boxed in; fixed copper encloses the pin)"]}
+    assert _left_to_pour(rr, spec)
+    assert not _left_to_pour({**rr, "routed": 2}, spec)                         # an open one not listed
+    assert not _left_to_pour({**rr, "failures": rr["failures"][:1] + ["GND: C1.2 -> C2.2  (boxed in)"]}, spec)
+    assert not _left_to_pour({**rr, "failures": ["+3V3: C1.1 -> zone  (boxed in)"] * 2}, spec)   # not the pour's net
+    assert not _left_to_pour(rr, {"board": {}})
+    assert not _left_to_pour({**rr, "routed": 5, "failures": []}, spec)
+
+
+def test_route_pours_only_when_tracemaker_can(tmp_path):
+    from wholeboard import router
+    new, old = tmp_path / "new-tm", tmp_path / "old-tm"
+    new.write_text('#!/bin/sh\n[ "$1" = route ] && echo "  --pour TEXT ...  Add a copper pour before routing"\n')
+    old.write_text('#!/bin/sh\nif [ "$1" = route ]; then echo "  --pours-off  not it"; else echo "  --pour"; fi\n')
+    for f in (new, old):
+        f.chmod(0o755)
+    assert router.route_pours({"tools": {"tracemaker": str(new)}})
+    assert not router.route_pours({"tools": {"tracemaker": str(old)}})     # only `route --help` counts

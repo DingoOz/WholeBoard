@@ -132,6 +132,32 @@ def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "rout
     return {"ok": True}
 
 
+_HELP: dict[tuple[str, float, tuple[str, ...]], str] = {}
+
+
+def _has_option(name: str, args: list[str], option: str, cfg: dict | None) -> bool:
+    """Whether `name args` (a help command) lists this option; older builds lack the newer ones."""
+    cfg = cfg or config.load()
+    exe = find(name, cfg)
+    if not exe:
+        return False
+    try:
+        key = (exe, os.path.getmtime(exe), tuple(args))
+    except OSError:
+        key = (exe, 0.0, tuple(args))
+    if key not in _HELP:
+        try:
+            _HELP[key] = subprocess.run(_cmd(exe, args, cfg), capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            _HELP[key] = ""
+    return option in _HELP[key].split()
+
+
+def route_pours(cfg: dict | None = None) -> bool:
+    """Whether this tracemaker adds copper pours before routing (route --pour), so it routes against them."""
+    return _has_option("tracemaker", ["route", "--help"], "--pour", cfg)
+
+
 _VIEW_TOKEN: str | None = None
 
 
@@ -154,7 +180,7 @@ def viewer_token() -> str | None:
 
 def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | None = None,
           view_port: int | None = None, embed_origin: str | None = None,
-          reroute: bool = False, diff_pairs: bool = False) -> dict:
+          reroute: bool = False, diff_pairs: bool = False, pours: list[str] | None = None) -> dict:
     cfg = config.load()
     exe = find("tracemaker", cfg)
     if not exe:
@@ -168,6 +194,8 @@ def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | 
         args.append("--reroute")
     if diff_pairs:
         args.append("--diff-pairs")
+    for pour in pours or []:
+        args += ["--pour", pour]
     if view_port:
         args += ["--view", "--no-freeze", "--view-port", str(view_port)]
         token = viewer_token()
