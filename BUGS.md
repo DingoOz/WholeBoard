@@ -193,3 +193,89 @@ Ideas, cheapest first:
 
 Not proposed: field-solver signal- or power-integrity simulation (openEMS and the like). It is slow, needs IBIS
 models that JLCPCB parts rarely have, and is hard to run unattended; boards that need it belong in a dedicated tool.
+
+## 17. Placement packs a large chip's decoupling caps onto one side, across its signal escapes
+
+On the PoE switch, `tracemaker-place` put all 27 of each KSZ9897's 100 nF caps in a cluster beside the chip's
+right side (x 72–81 mm for U10), the same side where port 5's MDI pairs and the RGMII bus leave. The caps
+pull toward their supply pins' centroid, which works for a small chip but for a 128-pin TQFP lands on top of
+the escape routes. Routing then stalled at 1185–1186/1189 on two full 2-hour runs, and every failure was a pin on
+that side (`P5_C_P/N -> U10.39/40`, `P10_C_P -> U11.39`, `RG_B2A_TXD1/2`, `+2V5A_AN U10.22 -> U10.33`).
+Tried on this board: lock each cap on the bottom side under its own pin. That was worse (1145/1189): the caps
+sit exactly where the pins' fan-out vias and bottom-layer escapes need to go, and the failures moved to the
+supply pins and the MDI pairs on the bottom edge. It also makes assembly double-sided, which costs more at JLCPCB.
+Fix ideas: have the placer pull each decap toward its own supply pin (not the group centroid) and spread them
+round the chip, keep a no-place band along the escape edges of fine-pitch chips with many signal pins (here the
+port-5 side and the RGMII side), or leave bottom-side space under the chip outline free for fan-out vias.
+
+## 18. TraceMaker can't finish a nearly routed board without routing all of it again
+
+`tracemaker route` without `--reroute` keeps every existing track and via as fixed copper. On this board's rev6
+(1186/1189 routed) it could not route the last three: `boxed in (target); ... fixed copper encloses the pin`, since the
+neighbours' fan-outs wall in the stuck pins and they may not be ripped. Removing the tracks within 2.5 mm of the stuck
+pins by hand (364 segments, 44 vias) and routing for 15 minutes left 11 open instead of 3. The only other choice is
+`--reroute`, a fresh two-hour run. WholeBoard's ECO retry (8) has the same problem.
+Fix idea: a repair mode that keeps the routed board but may rip up existing unlocked connections near the failures
+(negotiated rip-up limited to a window that grows on each failure), then reroutes what it ripped.
+
+## 19. A footprint whose own pads sit closer than the board clearance fails DRC only after routing
+
+The PoE switch's PSE MOSFETs (CSD19538Q3A, `Package_SON:VSON-8_3.3x3.3mm_P0.65mm_NexFET`) have 0.14 mm between
+pads 3 (source sense) and 4 (gate), and the board's clearance is 0.15 mm. KiCad's DRC reported all eight FETs as
+clearance errors, but only at the DRC step, after a two-hour route. `check_design` doesn't look at footprint pad gaps.
+Fix ideas: have `check_design` measure the gaps between a footprint's pads on different nets and warn when they are
+below `rules.clearance_mm` (naming the parts and the largest clearance that fits), or write a `.kicad_dru` rule that
+allows those footprints' own pad gaps (check it does not slow TraceMaker, see 13).
+
+## 20. A plane connection stranded in a sliver of the plane passes routing and fails DRC
+
+On the 5-port switch's rev10, U20 pad 17 (+54V) reached the In2.Cu +54V plane through a via at (117.75, 181.3). There
+the plane is a 0.85 × 12 mm sliver walled off from the rest by the antipads of neighbouring vias, so KiCad's DRC
+reported it unconnected. TraceMaker saw it: `route.json` has `unconnected_after_refill: 6` and its refill repair
+failed (`kept: false`). But `routed == connections`, so WholeBoard showed "661/661 connections" and the route step
+done, and went on to DRC instead of the ECO retry.
+Fix ideas: WholeBoard's route step should count `unconnected_after_refill` as unrouted (warn, and run the ECO retry);
+TraceMaker should count a plane connection as made only if its via lands in the plane's main body, or route on to one
+that does.
+
+## 21. Most of the switch-chip-side MDI pairs routed as two single traces
+
+Routed with `--diff-pairs` and every pair in an impedance group, the 5-port switch's rev10 still has `coupled_share`
+under 0.02 on 14 of the 20 KSZ9897-to-magnetics pairs (all of ports 3, 4 and 5, and port 1's C and D pairs), with
+up to 5 mm skew. The line-side pairs and ports 1A/1B and 2 are coupled at 0.7–0.99. Uncoupled 100 Ω pairs of
+33–58 mm are an EMI and return-loss risk for gigabit.
+Not looked into yet: whether the router gave up on pairing because of the congestion at the chip.
+
+## 22. The route step fails a board whose only open connections are ground pads that the pour joins
+
+The outer ground pour is added after routing (`board.add_ground_pour`), so TraceMaker can't see it. The 5-port switch
+rebuilt from rev10's copper (rev16) left 4 of 5 connections open, all `GND: <pad> -> zone` (C115.2, C119.2, C123.2,
+U10.84, boxed in by fixed copper). The pipeline stopped at "1 of 5 connections routed", but with the pour added,
+KiCad's DRC was clean (0 errors, 0 unconnected).
+**Fixed 2026-10-29** (uncommitted): `pipeline._left_to_pour` notices when every open connection is a pad of the pour's
+net to a zone. The route step then warns, skips the ECO retry and goes on to DRC, whose refill decides.
+**Then fixed properly 2026-10-29** (uncommitted): when TraceMaker has `route --pour`, WholeBoard passes
+`--pour GND@F.Cu --pour GND@B.Cu` (from `board.ground_pour`), so the router pours before routing, routes against the pour
+(soft zones) and counts these pads itself. `add_ground_pour` now adds a pour only on layers the router did not pour (an
+older TraceMaker), the ECO retry drops the first route's pours before routing again, and `_left_to_pour` applies only
+without the router's pour. KiCad's DRC with refill is still the final check.
+
+## 23. The design check treated every fixed part's pads as squares of their longest side
+
+`design._check_fixed` boxed each pad as a square of its longest side, so a 0603 near the board edge (C17 on the 5-port
+switch) was reported off the board when its real pad was well inside.
+**Fixed 2026-10-29** (uncommitted): each pad's box comes from its four rotated corners.
+
+## 24. The track-heating check gave a chip's whole supply current to every one of its signal nets
+
+`sim.simulate`'s per-net currents gave each part's current to the net of every one of its pads. The KSZ9897 (1.4 A)
+then made SPI_SCK, SW_INT_N, the MDI pairs and its other signal nets "1400 mA, heats its 0.15 mm track by 48 °C": 63
+false problems on the 5-port switch.
+**Fixed 2026-10-29** (uncommitted): an IC's current goes only to its supply nets (`nl.loads`), split as the model splits
+it. A regulator's output current still applies where it is larger. Two-pin parts are unchanged.
+
+## 25. Firmware picked a diode as the microcontroller because its description named the ESP32
+
+`firmware.detect` matched the family patterns against every part's description too, so D23 ("Switch reset from the
+ESP32") came first and firmware was generated for D23 (pins "not a GPIO").
+**Fixed 2026-10-29** (uncommitted): descriptions count only on chip-like references (U, IC, M, MOD).
