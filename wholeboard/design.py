@@ -440,9 +440,13 @@ def _check_fixed(spec: dict, fps: dict, rep: Report, w: float, h: float) -> None
         for p in fp.pads:
             if p.kind == "np_thru_hole":
                 continue
-            rr = max(p.w, p.h) / 2
-            px, py = _rot(p.x, -p.y if bottom else p.y, r)
-            pads.append((x + px - rr, y + py - rr, x + px + rr, y + py + rr))
+            # the pad's own rectangle, turned with the pad and then with the part (a long pad is not a square)
+            corners = []
+            for dx, dy in ((-p.w / 2, -p.h / 2), (p.w / 2, -p.h / 2), (p.w / 2, p.h / 2), (-p.w / 2, p.h / 2)):
+                ex, ey = _rot(dx, dy, p.angle)
+                px, py = _rot(p.x + ex, -(p.y + ey) if bottom else p.y + ey, r)
+                corners.append((x + px, y + py))
+            pads.append(_box(corners))
         poly = spec["board"].get("outline")
         if pads and poly:
             bad = [(px0, py0) for b in pads for px0, py0 in ((b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3]))

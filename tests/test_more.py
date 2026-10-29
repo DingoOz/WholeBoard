@@ -426,6 +426,21 @@ def test_test_points_fixed_along_an_edge_clear_of_holes():
 
 
 @needs_libs
+def test_fixed_part_edge_check_uses_the_real_pad_shapes():
+    """A 1206's 1.15 x 1.8 mm pads near the edge: measured as rectangles, turned with the part, not as squares."""
+    def errors(x, rot):
+        spec = {"name": "t", "board": {"width_mm": 40, "height_mm": 30},
+                "components": [{"ref": "C1", "value": "10uF", "footprint": "Capacitor_SMD:C_1206_3216Metric",
+                                "lcsc": "C13585", "placement": {"x_mm": x, "y_mm": 15, "rotation": rot, "locked": True}}],
+                "nets": [{"name": "A", "pins": ["C1.1"]}, {"name": "GND", "class": "power", "pins": ["C1.2"]}]}
+        return [e for e in design.validate(spec).errors if "C1 at" in e]
+    assert not errors(2.62, 180)          # pad edge 0.57 mm from the board edge (a square would say 0.24)
+    assert errors(2.2, 180)               # 0.15 mm: too close
+    assert not errors(1.5, 90)            # turned: the pads' 1.8 mm side runs along x, 0.6 mm from the edge
+    assert errors(1.0, 90)
+
+
+@needs_libs
 def test_circle_courtyards_and_small_holes():
     from wholeboard import sexpr
     from wholeboard.kicad import board
