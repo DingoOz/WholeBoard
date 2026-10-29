@@ -129,3 +129,15 @@ def test_opamp_gain_ac(tmp_path):
                                       {"net": "OUT", "measure": "cutoff_hz", "min": 50e3, "max": 200e3}]})
     r = sim.simulate(s, tmp_path, engine=engine)
     assert r["ok"], (r["problems"], r["expectations"])
+
+
+@needs_spice
+def test_an_ic_current_runs_in_its_supply_nets_only(tmp_path):
+    s = spec([comp("U1", "MYCHIP", sim={"load_ma": 100}), comp("R1", "10k", "Resistor_SMD:R_0603_1608Metric")],
+             [{"name": "+3V3", "class": "power", "pins": ["U1.1"]}, {"name": "+1V8", "class": "power", "pins": ["U1.2"]},
+              {"name": "SIG", "pins": ["U1.3", "R1.1"]}, {"name": "GND", "class": "power", "pins": ["U1.4", "R1.2"]}],
+             {"sources": [{"net": "+3V3", "volts": 3.3}, {"net": "+1V8", "volts": 1.8}]})
+    r = sim.simulate(s, tmp_path, engine=engine)
+    i = r["net_current_ma"]
+    assert (i.get("SIG") or 0) < 1                         # not the chip's 100 mA
+    assert i["+1V8"] >= 50 and i["+3V3"] >= 50              # each supply carries its share
