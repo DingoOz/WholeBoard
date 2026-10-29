@@ -372,3 +372,13 @@ def test_unreachable_ai_server_says_why():
     assert "dropped the connection" in said[dropping] and "forwarder" in said[dropping]
     assert said[closed].startswith("Nothing is answering at")
     srv.close()
+
+
+def test_firmware_finds_the_mcu_not_a_part_whose_description_names_it():
+    from wholeboard import firmware
+    spec = {"components": [
+        {"ref": "D23", "value": "1N4148W", "symbol": "Device:D", "description": "Switch reset from the ESP32"},
+        {"ref": "R109", "value": "10k", "symbol": "Device:R", "description": "ESP32 EN pull-up"},
+        {"ref": "U6", "value": "ESP32-S3-WROOM-1-N16R8", "symbol": "RF_Module:ESP32-S3-WROOM-1"},
+        {"ref": "U9", "value": "module", "description": "ESP32-C3 radio"}]}
+    assert [(c["ref"], fam[0]) for c, fam in firmware.detect(spec)] == [("U6", "esp32s3"), ("U9", "esp32c3")]

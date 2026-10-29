@@ -49,7 +49,10 @@ def detect(spec: dict) -> list[tuple[dict, tuple]]:
     """The microcontrollers on the board, with their family entry."""
     out = []
     for c in spec.get("components") or []:
-        text = " ".join(str(c.get(k) or "") for k in ("symbol", "value", "mpn", "description")).upper()
+        text = " ".join(str(c.get(k) or "") for k in ("symbol", "value", "mpn")).upper()
+        # a description names the chip only on a chip: "Switch reset from the ESP32" on a diode does not
+        if re.match(r"(U|IC|M|MOD)\d", str(c.get("ref") or "").upper()):
+            text += " " + str(c.get("description") or "").upper()
         for fam in FAMILIES:
             if re.search(fam[1], text):
                 out.append((c, fam))
