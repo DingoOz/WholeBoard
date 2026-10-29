@@ -88,6 +88,15 @@ def _stream(cmd: list[str], log, cancel: threading.Event | None, timeout: float)
                             bufsize=1, env=env)
     timer = threading.Timer(timeout, proc.kill)
     timer.start()
+    done = threading.Event()
+
+    def watch():                      # the router can be quiet for an hour: don't wait for a line to stop it
+        while not done.wait(0.5):
+            if cancel.is_set():
+                proc.kill()
+                return
+    if cancel is not None:
+        threading.Thread(target=watch, daemon=True).start()
     try:
         assert proc.stdout
         for line in proc.stdout:
@@ -99,13 +108,15 @@ def _stream(cmd: list[str], log, cancel: threading.Event | None, timeout: float)
                 break
         return proc.wait()
     finally:
+        done.set()
         timer.cancel()
 
 
 def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "routable",
           scratch: bool = True, seconds: float | None = None, flip: bool = False,
-          keep_side: list[str] | None = None) -> dict:
-    """flip: surface-mount parts may go on the bottom side (keep_side: references that stay where they are)."""
+          keep_side: list[str] | None = None, live: Path | None = None) -> dict:
+    """flip: surface-mount parts may go on the bottom side (keep_side: references that stay where they are).
+    live: the placer writes its frames here as it works (see place_live), for the page's live view."""
     cfg = config.load()
     exe = find("tracemaker-place", cfg)
     if not exe:
@@ -118,6 +129,8 @@ def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "rout
         args.append("--flip")
         if keep_side:
             args += ["--keep-side", ",".join(keep_side)]
+    if live and place_live(cfg):
+        args += ["--live", str(_wsl_path(live) if cfg["tools"].get("tracemaker_wsl") else live)]
     _copy_project(pcb_in, pcb_out)
     # routable mode trial-routes each candidate placement; on some footprints (a module whose thermal vias sit under
     # its exposed pad) those trials never succeed and it overruns its time, so it gets a tighter limit and a fallback
@@ -130,6 +143,37 @@ def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "rout
     if code != 0 or not pcb_out.exists():
         raise RuntimeError(f"tracemaker-place exited with code {code}")
     return {"ok": True}
+
+
+_HELP: dict[tuple[str, float, tuple[str, ...]], str] = {}
+
+
+def _has_option(name: str, args: list[str], option: str, cfg: dict | None) -> bool:
+    """Whether `name args` (a help command) lists this option; older builds lack the newer ones."""
+    cfg = cfg or config.load()
+    exe = find(name, cfg)
+    if not exe:
+        return False
+    try:
+        key = (exe, os.path.getmtime(exe), tuple(args))
+    except OSError:
+        key = (exe, 0.0, tuple(args))
+    if key not in _HELP:
+        try:
+            _HELP[key] = subprocess.run(_cmd(exe, args, cfg), capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            _HELP[key] = ""
+    return option in _HELP[key].split()
+
+
+def place_live(cfg: dict | None = None) -> bool:
+    """Whether this tracemaker-place streams its placement (--live)."""
+    return _has_option("tracemaker-place", ["--help"], "--live", cfg)
+
+
+def route_pours(cfg: dict | None = None) -> bool:
+    """Whether this tracemaker adds copper pours before routing (route --pour), so it routes against them."""
+    return _has_option("tracemaker", ["route", "--help"], "--pour", cfg)
 
 
 _VIEW_TOKEN: str | None = None
@@ -154,7 +198,7 @@ def viewer_token() -> str | None:
 
 def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | None = None,
           view_port: int | None = None, embed_origin: str | None = None,
-          reroute: bool = False, diff_pairs: bool = False) -> dict:
+          reroute: bool = False, diff_pairs: bool = False, pours: list[str] | None = None) -> dict:
     cfg = config.load()
     exe = find("tracemaker", cfg)
     if not exe:
@@ -168,6 +212,8 @@ def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | 
         args.append("--reroute")
     if diff_pairs:
         args.append("--diff-pairs")
+    for pour in pours or []:
+        args += ["--pour", pour]
     if view_port:
         args += ["--view", "--no-freeze", "--view-port", str(view_port)]
         token = viewer_token()

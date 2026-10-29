@@ -74,6 +74,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
           <div class="menu" id="moreMenu" role="menu" hidden>
             <button type="button" role="menuitem" id="outlineBtn" title="Give the board the shape (and mounting holes) from a DXF drawing, e.g. from your case maker">Board outline from DXF…</button>
             <button type="button" role="menuitem" id="editSpecBtn">Edit design JSON…</button>
+            <button type="button" role="menuitem" id="publishBtn" title="Put the latest build in a repository on your GitHub">Publish to GitHub…</button>
             <button type="button" role="menuitem" id="folderBtn">Open folder</button>
             <hr>
             <button type="button" role="menuitem" id="deleteBtn" class="danger" title="Delete this board and its files">Delete board…</button>
@@ -113,6 +114,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
       <button type="button" data-tab="tools">KiCad &amp; TraceMaker</button>
       <button type="button" data-tab="jlc">JLCPCB</button>
       <button type="button" data-tab="net">Network</button>
+      <button type="button" data-tab="github">GitHub</button>
       <button type="button" data-tab="look">Appearance</button>
     </div>
     <div class="tab" data-tab="ai">
@@ -296,6 +298,14 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
       <p class="hint" id="notifyHint">The tab's title and icon always change. This also shows a desktop notification.</p>
       <p class="hint">Keyboard shortcuts: press <kbd>?</kbd> anywhere to see them.</p>
     </div>
+    <div class="tab" data-tab="github" hidden>
+      <p class="hint">Used to publish boards to your GitHub. If the GitHub CLI is signed in on the computer running
+        WholeBoard (<code>gh auth login</code>), leave this empty and WholeBoard uses that.</p>
+      <p id="ghState" class="pins"></p>
+      <label>Personal access token <input name="github.token" type="password" autocomplete="off" placeholder="github_pat_… or ghp_… (needs repository access)"></label>
+      <p class="hint">A fine-grained token needs <i>Administration</i> and <i>Contents</i> read and write on all
+        repositories (to create them). A classic token needs the <code>repo</code> scope.</p>
+    </div>
     <div class="tab" data-tab="net" hidden>
       <p class="hint">Start WholeBoard with <code>--host 0.0.0.0</code> to use it from other computers on your network.
         A password stops anyone else on the network from using it (and your AI key). This computer never needs it.</p>
@@ -336,6 +346,28 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
     <div class="modal-actions">
       <button class="btn ghost" value="cancel" type="submit">Close</button>
       <button class="btn" id="historyCompareBtn" type="button" disabled>Compare ticked</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="publishDialog" class="modal" aria-labelledby="publishTitle">
+  <form method="dialog" id="publishForm">
+    <h2 id="publishTitle">Publish to GitHub</h2>
+    <p id="pubAccount" class="hint"></p>
+    <p id="pubDone" class="pub-done" hidden></p>
+    <label>Repository name <input id="pubName" maxlength="100" pattern="[A-Za-z0-9._-]+" spellcheck="false"></label>
+    <p class="hint" id="pubNameHint" hidden>Change the name to publish to a new repository instead.</p>
+    <label>Description <input id="pubDesc" maxlength="300"></label>
+    <div class="row" id="pubVis" role="radiogroup" aria-label="Visibility">
+      <label class="check"><input type="radio" name="pubVis" value="private" checked> Private: only you, and people you invite</label>
+      <label class="check"><input type="radio" name="pubVis" value="public"> Public: anyone</label>
+    </div>
+    <details id="pubFiles"><summary></summary><ul class="pub-files"></ul></details>
+    <details id="pubReadme"><summary>README</summary><pre class="pub-readme"></pre></details>
+    <p id="pubErr" class="err"></p>
+    <div class="modal-actions">
+      <button class="btn ghost" value="cancel" type="submit">Close</button>
+      <button class="btn primary" id="pubGo" type="button">Create repository</button>
     </div>
   </form>
 </dialog>
@@ -382,6 +414,7 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 
 <script src="/static/board.js"></script>
+<script src="/static/placelive.js"></script>
 <script src="/static/mesh3d.js"></script>
 <script src="/static/plot.js"></script>
 <script src="/static/simlab.js"></script>

@@ -256,7 +256,7 @@ function showHome() {
 async function openProject(pid) {
   if (S.ws) { S.ws.onclose = null; S.ws.close(); S.ws = null; }
   S.pid = pid; S.visuals = {}; S.selStep = null; S.follow = true; S.lastSeq = 0; S.logs = []; S.questions = {};
-  S.qa = []; S.pending.clear(); S.finish = null; S.liveBoard = null;
+  S.qa = []; S.pending.clear(); S.finish = null; S.liveBoard = null; S.liveViewer = false;
   for (const k in liveShown) { liveShown[k]?.view?.destroy(); delete liveShown[k]; }
   $("#live").innerHTML = "";
   $("#home").hidden = true; $("#workspace").hidden = false;
@@ -313,13 +313,13 @@ function handleEvent(e, replay) {
       if (e.key === "outputs") updateStep("summary");
       if (!replay && e.status === "running" && S.follow) selectStep(e.key, false);
       break;
-    case "log": addLog(e.step, e.text); break;
+    case "log": addLog(e.step, e.text, replay); break;
     case "simlab": if (!replay && e.action === "video") { S.simlabVideo = true; S.follow = false; selectStep("sim", true); } break;
     case "visual":
       (S.visuals[e.step] ||= {})[e.kind] = e;
       if (e.kind === "board") S.liveBoard = e;
       if (e.step === "quote") updateStep("summary");
-      if (e.kind === "viewer" && !replay) S.liveViewer = true;
+      if (e.kind === "viewer") S.liveViewer = true;     // on replay too: setStatus clears it once that build ended
       if (!replay && S.follow) selectStep(e.step, false);
       else if (S.selStep === e.step) renderStage();
       break;
@@ -431,10 +431,11 @@ function setStatus(status, note) {
   if (!busy && S.liveViewer) { S.liveViewer = false; if (S.selStep === "route") renderStage(); }
 }
 
-function addLog(step, text) {
+function addLog(step, text, replay) {
   S.logs.push([step, text]);
   if (S.logs.length > 4000) S.logs.splice(0, 1000);
-  if (!S.selStep || S.selStep === step) {
+  // replaying a long build (thousands of lines) one line at a time froze the page: selectStep fills it after
+  if (!replay && (!S.selStep || S.selStep === step)) {
     const pre = $("#log");
     pre.textContent += text + "\n";
     if (pre.textContent.length > 200000) pre.textContent = pre.textContent.slice(-150000);
@@ -536,10 +537,11 @@ function renderStage() {
   const key = S.selStep;
   if (key === "summary") { stage.append(renderSummary()); return; }
   const vis = S.visuals[key] || {};
-  const order = ["import", "viewer", "board", "svg", "erc", "sim", "power", "netlist", "drc", "checks", "impedance", "images", "files", "panel", "report", "bringup", "firmware", "review", "case", "enclosure", "quote"];
+  const order = ["import", "viewer", "live", "board", "svg", "erc", "sim", "power", "netlist", "drc", "checks", "impedance", "images", "files", "panel", "report", "bringup", "firmware", "review", "case", "enclosure", "quote"];
   const kinds = Object.keys(vis).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   if (key === "sim" && vis.sim?.result?.ran && S.visuals.outputs?.files) kinds.unshift("simlab");
   if (key === "route" && !S.liveViewer) { const i = kinds.indexOf("viewer"); if (i >= 0) kinds.splice(i, 1); }
+  if (key === "place" && !placing()) { const i = kinds.indexOf("live"); if (i >= 0) kinds.splice(i, 1); }
   const extra = key === "brief" ? briefCard() : key === "parts" ? partsCard() : null;
   if (extra) stage.append(extra);
   if (!kinds.length) {
@@ -564,6 +566,8 @@ function renderStage() {
 }
 
 // ------------------------------------------------------------------ live view
+const placing = () => S.project?.steps.place?.status === "running";
+
 // The schematic, the board and the 3D render side by side, each replaced as soon as a newer one is made.
 const LIVE = [
   { key: "sch", title: "Schematic", steps: ["schematic"], wait: "Drawn after the design check." },
@@ -575,6 +579,8 @@ const liveShown = {};    // tile key -> what it shows now, so a tile is only reb
 function liveSource(key) {
   if (key === "sch") { const v = S.visuals.schematic?.svg; return v && { id: v.url, step: "schematic", v }; }
   if (key === "pcb") {
+    const pl = S.visuals.place?.live;
+    if (pl && placing()) return { id: "placelive" + pl.seq, step: "place", v: pl, placeLive: true };
     const viewer = S.visuals.route?.viewer;
     if (viewer && S.liveViewer && S.project.steps.route?.status === "running") return { id: "viewer" + viewer.seq, step: "route", v: viewer, viewer: true };
     const v = S.liveBoard;
@@ -589,6 +595,11 @@ function liveBody(key, src) {
     const box = el("div", { class: "zoomimg" }), img = el("img", { src: src.v.url, alt: "Schematic" });
     box.append(img); zoomable(box, img);
     return box;
+  }
+  if (key === "pcb" && src.placeLive) {
+    const host = el("div");
+    liveShown.pcb.view = new PlaceLive(host, src.v, { compact: true, running: placing });
+    return host;
   }
   if (key === "pcb" && src.viewer) {
     const url = `${location.protocol}//${location.hostname}:${src.v.port}/` + (src.v.token ? `?token=${encodeURIComponent(src.v.token)}` : "");
@@ -631,7 +642,8 @@ function renderLive() {
     tile.classList.toggle("running", !!running);
     tile.classList.toggle("stale", !!stale);
     const st = tile.querySelector(".live-state");
-    st.textContent = running ? (src?.viewer ? "routing now" : src ? "updating…" : "working…") : stale ? "from the last build" : src ? src.v.title : "";
+    st.textContent = running === "route" && !src?.viewer ? "routing; shown when it finishes"
+      : running ? (src?.viewer ? "routing now" : src ? "updating…" : "working…") : stale ? "from the last build" : src ? src.v.title : "";
     st.title = st.textContent;
     if (liveShown[t.key]?.id === (src?.id || null)) continue;
     liveShown[t.key]?.view?.destroy();
@@ -766,6 +778,12 @@ const RENDER = {
       new BoardView(host, geo, { ratsnest: isPlace, courtyards: S.selStep === "layout" });
     });
     return c;
+  },
+  live(v) {
+    // the placer's frames as it works (the step view drops this card once placement is over)
+    const host = el("div");
+    new PlaceLive(host, v, { running: placing });
+    return card(v.title, host, { fill: true });
   },
   viewer(v) {
     // The viewer runs on the WholeBoard machine, so point at whatever host this page was loaded from.
@@ -1592,6 +1610,53 @@ function zoomable(box, img) {
   box.addEventListener("pointermove", e => { if (!drag) return; const z = wbZoom(); x += (e.clientX - drag[0]) / z; y += (e.clientY - drag[1]) / z; drag = [e.clientX, e.clientY]; apply(); });
 }
 
+// ------------------------------------------------------------------ publish to GitHub
+const bytes = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} kB`;
+
+async function openPublish() {
+  const d = $("#publishDialog"), go = $("#pubGo");
+  $("#pubErr").textContent = ""; $("#pubAccount").textContent = "Checking your GitHub account…";
+  $("#pubDone").hidden = true; go.disabled = true;
+  d.showModal();
+  const [acct, pv] = await Promise.allSettled([api("/api/github"), api(`/api/projects/${S.pid}/publish`)]);
+  const a = acct.value || { ok: false, error: acct.reason?.message };
+  $("#pubAccount").textContent = a.ok ? `Publishing as ${a.login} on GitHub` + (a.source === "gh" ? " (signed in with the gh command)." : " (the token in Settings).") : a.error;
+  if (pv.status === "rejected") { $("#pubErr").textContent = pv.reason.message; return; }
+  const p = pv.value, done = p.published;
+  $("#pubName").value = done ? done.repo.split("/")[1] : p.name;
+  $("#pubDesc").value = p.description;
+  $("#pubNameHint").hidden = !done;
+  if (done) {
+    $("#pubDone").hidden = false;
+    $("#pubDone").replaceChildren("Revision ", String(done.revision), " is on GitHub at ",
+      el("a", { href: done.url, target: "_blank", rel: "noopener" }, done.repo), done.private ? " (private), " : " (public), ", ago(done.published), ".");
+  }
+  const syncGo = () => {
+    const same = done && $("#pubName").value.trim() === done.repo.split("/")[1];
+    go.textContent = same ? `Publish revision ${S.project.revision ?? ""}` : "Create repository";
+    $("#pubVis").hidden = same; $("#pubDesc").disabled = same;
+  };
+  $("#pubName").oninput = syncGo; syncGo();
+  $("#pubFiles summary").textContent = `What goes in it: ${p.files.length} files, ${bytes(p.total)}`;
+  $("#pubFiles ul").replaceChildren(...p.files.map(f => el("li", {}, el("code", {}, f.path), el("span", { class: "muted" }, bytes(f.size)))));
+  $("#pubReadme pre").textContent = p.readme;
+  go.disabled = !a.ok;
+  go.onclick = async () => {
+    const name = $("#pubName").value.trim();
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) { $("#pubErr").textContent = "Use letters, digits, '.', '-' and '_' in the name."; return; }
+    const isPublic = !$("#pubVis").hidden && d.querySelector('[name="pubVis"]:checked').value === "public";
+    if (isPublic && !await ask(`Make “${name}” public? Anyone will be able to see the design, its parts and your original request.`, { ok: "Publish publicly" })) return;
+    $("#pubErr").textContent = "";
+    go.disabled = true; const label = go.textContent; go.textContent = "Publishing…";
+    try {
+      const r = await api(`/api/projects/${S.pid}/publish`, { method: "POST", body: { name, description: $("#pubDesc").value, private: !isPublic } });
+      d.close();
+      S.project.github = r;
+      toast(el("span", {}, "Published to ", el("a", { href: r.url, target: "_blank", rel: "noopener" }, r.repo), "."), "ok", 12000);
+    } catch (e) { $("#pubErr").textContent = e.message; go.textContent = label; go.disabled = false; }
+  };
+}
+
 // ------------------------------------------------------------------ settings
 async function openSettings() {
   const cfg = await api("/api/config");
@@ -1856,6 +1921,12 @@ function init() {
     for (const id of ["#netSet", "#netClear", "#netPassword"]) $(id).disabled = !a.local;
   };
   $("#settingsTabs").addEventListener("click", e => { if (e.target.dataset.tab === "net") netState(); });
+  $("#settingsTabs").addEventListener("click", async e => {
+    if (e.target.dataset.tab !== "github") return;
+    $("#ghState").textContent = "Checking…";
+    const a = await api("/api/github").catch(err => ({ ok: false, error: err.message }));
+    $("#ghState").textContent = a.ok ? `Signed in as ${a.login}` + (a.source === "gh" ? " through the gh command." : " with the token below.") : a.error;
+  });
   const setPw = async password => {
     try {
       const r = await api("/api/auth/password", { method: "POST", body: { password } });
@@ -1976,6 +2047,7 @@ function init() {
     try { await api(`/api/projects/${S.pid}`, { method: "DELETE" }); showHome(); toast("Board deleted.", "ok"); }
     catch (e) { toast(e.message, "error"); }
   };
+  $("#publishBtn").onclick = () => openPublish();
   $("#folderBtn").onclick = async () => {
     const r = await api(`/api/projects/${S.pid}/open-folder`, { method: "POST" });
     if (!r.ok) toast("The board's folder is " + r.folder);

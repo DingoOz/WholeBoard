@@ -21,6 +21,7 @@ def test_rules_file_follows_the_layer_count():
     assert "(constraint edge_clearance (min 0.5mm))" in dru.text(2, 1.6, 0.5)     # the spec's larger edge clearance
     assert dru.limits(4, 2.0)["min_via_drill"] == 0.2          # 10:1 aspect ratio on a 2 mm board
     assert two.count("(") == two.count(")")
+    assert "(constraint clearance" not in four                 # would replace the net classes' clearance
 
 
 def test_small_vias_and_vias_in_pads_are_priced():
@@ -131,6 +132,9 @@ def test_interface_profiles():
             "impedance": [{"nets": ["USB_DP", "USB_DN"], "kind": "diff", "profile": "usb2_hs"},
                           {"nets": ["D0", "D1"], "kind": "bus", "profile": "qspi_flash"}]}
     assert impedance.validate(spec)[0] == [] and len(impedance.netclasses(spec)) == 1
+    two = {**spec, "nets": spec["nets"] + [{"name": "B_DP"}, {"name": "B_DN"}],
+           "impedance": spec["impedance"] + [{"nets": ["B_DP", "B_DN"], "kind": "diff", "profile": "usb2_hs"}]}
+    assert [k["nets"] for k in impedance.netclasses(two)] == [["USB_DP", "USB_DN", "B_DP", "B_DN"]]  # one class per kind
     bad = {**spec, "impedance": [{"nets": ["D0"], "profile": "nope"}]}
     assert "unknown profile" in impedance.validate(bad)[0][0]
     t = lambda net, a, b: {"net": net, "a": a, "b": b, "w": 0.2}  # noqa: E731

@@ -12,6 +12,7 @@ Short recipes for one job each.
 - [Fit a board to a case](case-fit.md): a DXF outline, or a box you already have
 - [Make a panel](panels.md)
 - [Order the board](order.md)
+- [Publish a board to GitHub](publish-github.md) as a new repository
 - [Build and flash the firmware](firmware.md)
 - [Use the checks from other agents (MCP)](mcp.md)
 - [Design with Claude Code](claude-code.md) on your Claude plan

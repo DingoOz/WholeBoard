@@ -409,6 +409,32 @@ def test_place_falls_back_to_full_mode(tmp_path, monkeypatch):
     assert "without the routing check" in logs[0]
 
 
+def test_place_streams_live_only_when_the_placer_can(tmp_path, monkeypatch):
+    from wholeboard import router
+    new, old = tmp_path / "new-place", tmp_path / "old-place"
+    new.write_text("#!/bin/sh\necho '  --record TEXT  timelapse'\necho '  --live TEXT  as it changes'\n")
+    old.write_text("#!/bin/sh\necho '  --record TEXT  timelapse'\necho '  --liveness INT  not it'\n")
+    for f in (new, old):
+        f.chmod(0o755)
+    assert router.place_live({"tools": {"tracemaker_place": str(new)}})
+    assert not router.place_live({"tools": {"tracemaker_place": str(old)}})
+    cmds = []
+
+    def fake_stream(cmd, log, cancel, timeout):
+        cmds.append(cmd)
+        Path(cmd[cmd.index("-o") + 1]).write_text("pcb")
+        return 0
+    monkeypatch.setattr(router.config, "load", lambda: {"tools": {"tracemaker_place": str(new)}})
+    monkeypatch.setattr(router, "_stream", fake_stream)
+    monkeypatch.setattr(router, "_copy_project", lambda a, b: None)
+    live = tmp_path / "b-2-placed.live.jsonl"
+    router.place(tmp_path / "in.kicad_pcb", tmp_path / "out.kicad_pcb", seconds=10, live=live)
+    assert cmds[-1][cmds[-1].index("--live") + 1] == str(live)
+    monkeypatch.setattr(router.config, "load", lambda: {"tools": {"tracemaker_place": str(old)}})
+    router.place(tmp_path / "in.kicad_pcb", tmp_path / "out.kicad_pcb", seconds=10, live=live)
+    assert "--live" not in cmds[-1]
+
+
 @needs_libs
 def test_test_points_fixed_along_an_edge_clear_of_holes():
     import math
@@ -423,6 +449,21 @@ def test_test_points_fixed_along_an_edge_clear_of_holes():
     assert all(math.hypot(x - 3.5, y - 26.5) >= 3.45 + 1.5 for x, y in pts)        # clear of hole H4
     assert all(not (12 - 1.48 - 1.5 < x < 12 + 1.48 + 1.5) for x, _ in pts)        # clear of R1
     assert math.dist(*pts) >= 3.0
+
+
+@needs_libs
+def test_fixed_part_edge_check_uses_the_real_pad_shapes():
+    """A 1206's 1.15 x 1.8 mm pads near the edge: measured as rectangles, turned with the part, not as squares."""
+    def errors(x, rot):
+        spec = {"name": "t", "board": {"width_mm": 40, "height_mm": 30},
+                "components": [{"ref": "C1", "value": "10uF", "footprint": "Capacitor_SMD:C_1206_3216Metric",
+                                "lcsc": "C13585", "placement": {"x_mm": x, "y_mm": 15, "rotation": rot, "locked": True}}],
+                "nets": [{"name": "A", "pins": ["C1.1"]}, {"name": "GND", "class": "power", "pins": ["C1.2"]}]}
+        return [e for e in design.validate(spec).errors if "C1 at" in e]
+    assert not errors(2.62, 180)          # pad edge 0.57 mm from the board edge (a square would say 0.24)
+    assert errors(2.2, 180)               # 0.15 mm: too close
+    assert not errors(1.5, 90)            # turned: the pads' 1.8 mm side runs along x, 0.6 mm from the edge
+    assert errors(1.0, 90)
 
 
 @needs_libs
@@ -464,3 +505,39 @@ def test_new_blocks_wire_up(bid, tmp_path):
         erc = cli.erc(Path(sch["sch"]))
         real = [e for e in erc["errors"] if e["type"] != "pin_not_driven"]    # alone, nothing drives its inputs
         assert real == [], real
+
+
+def test_stop_ends_a_quiet_router():
+    import sys
+    import threading
+    import time
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    start = time.time()
+    from wholeboard import router
+    router._stream([sys.executable, "-c", "import time; time.sleep(30)"], lambda s: None, cancel, timeout=60)
+    assert time.time() - start < 5                 # it printed nothing, but Stop still ended it
+
+
+def test_ground_pads_left_to_the_pour_go_on_to_drc():
+    from wholeboard.pipeline import _left_to_pour
+    spec = {"board": {"ground_pour": "GND"}}
+    rr = {"connections": 5, "routed": 3, "failures": ["GND: C1.2 -> zone  (search budget)",
+                                                      "GND: U1.84 -> zone  (boxed in; fixed copper encloses the pin)"]}
+    assert _left_to_pour(rr, spec)
+    assert not _left_to_pour({**rr, "routed": 2}, spec)                         # an open one not listed
+    assert not _left_to_pour({**rr, "failures": rr["failures"][:1] + ["GND: C1.2 -> C2.2  (boxed in)"]}, spec)
+    assert not _left_to_pour({**rr, "failures": ["+3V3: C1.1 -> zone  (boxed in)"] * 2}, spec)   # not the pour's net
+    assert not _left_to_pour(rr, {"board": {}})
+    assert not _left_to_pour({**rr, "routed": 5, "failures": []}, spec)
+
+
+def test_route_pours_only_when_tracemaker_can(tmp_path):
+    from wholeboard import router
+    new, old = tmp_path / "new-tm", tmp_path / "old-tm"
+    new.write_text('#!/bin/sh\n[ "$1" = route ] && echo "  --pour TEXT ...  Add a copper pour before routing"\n')
+    old.write_text('#!/bin/sh\nif [ "$1" = route ]; then echo "  --pours-off  not it"; else echo "  --pour"; fi\n')
+    for f in (new, old):
+        f.chmod(0o755)
+    assert router.route_pours({"tools": {"tracemaker": str(new)}})
+    assert not router.route_pours({"tools": {"tracemaker": str(old)}})     # only `route --help` counts

@@ -71,6 +71,9 @@ DEFAULTS: dict = {
         "price_kwh": 0.30,
         "machine_per_h": 0.0,       # wear, or a print service's hourly rate
     },
+    "github": {                     # for publishing boards; empty = use the GitHub CLI's sign-in (gh auth login)
+        "token": "",
+    },
     "projects_dir": str(DEFAULT_PROJECTS),
     "port": 8770,
 }
@@ -127,4 +130,4 @@ def public(cfg: dict) -> dict:
 
 
 SECRETS = (("ai", "anthropic_api_key"), ("ai", "openai_api_key"), ("suppliers", "mouser_api_key"),
-           ("suppliers", "digikey_client_secret"))
+           ("suppliers", "digikey_client_secret"), ("github", "token"))

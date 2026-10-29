@@ -149,12 +149,21 @@ def pair_names(a: str, b: str) -> bool:
 
 
 def netclasses(spec: dict) -> list[dict]:
-    """Extra KiCad net classes for the controlled nets: (name, width, gap, nets)."""
-    out = []
-    for i, g in enumerate(r for r in rules(spec) if r["kind"] != "bus"):
+    """Extra KiCad net classes for the controlled nets: (name, width, gap, nets).
+
+    Groups with the same impedance, width, gap and kind share one class: TraceMaker keeps a board-sized obstacle
+    cache per class in each routing variant, so a class per pair costs memory (80 pairs: over 100 GB)."""
+    out: list[dict] = []
+    by_key: dict = {}
+    for g in (r for r in rules(spec) if r["kind"] != "bus"):
         w = g["width_mm"] if g["practical"] else None
-        out.append({"name": f"Impedance{i + 1}_{g['ohms']:g}R", "width": w, "gap": g.get("gap_mm"), "nets": g["nets"],
-                    "diff": g["kind"] == "diff"})
+        key = (g["ohms"], w, g.get("gap_mm"), g["kind"] == "diff")
+        if key in by_key:
+            by_key[key]["nets"] = by_key[key]["nets"] + list(g["nets"])
+            continue
+        by_key[key] = {"name": f"Impedance{len(out) + 1}_{g['ohms']:g}R", "width": w, "gap": g.get("gap_mm"),
+                       "nets": list(g["nets"]), "diff": g["kind"] == "diff"}
+        out.append(by_key[key])
     return out
 
 

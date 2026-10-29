@@ -167,6 +167,33 @@ def test_clearing_the_boards_list_keeps_the_files(own_config, tmp_path, monkeypa
     assert not c.get("/api/projects").json()[0]["hidden"]
 
 
+def test_tail_reads_only_complete_new_lines(own_config, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from wholeboard import project, server
+    monkeypatch.setattr(config, "load", lambda: {"projects_dir": str(tmp_path / "boards")})
+    monkeypatch.setattr(server, "manager", project.Manager())
+    p = server.mgr().create("A blinker")
+    c = TestClient(server.app)
+    f = p.root / "rev1" / "b-2-placed.live.jsonl"
+    url = p.tail_url(f)
+    assert url == f"/api/projects/{p.id}/tail/rev1/b-2-placed.live.jsonl"
+    assert c.get(url).status_code == 204                                  # the placer has not started yet
+    f.parent.mkdir()
+    f.write_text('{"a": 1}\n{"b": 2}\n{"c"')
+    r = c.get(url, params={"offset": 0})
+    assert r.text == '{"a": 1}\n{"b": 2}\n' and r.headers["x-offset"] == "18"   # not the line still being written
+    with f.open("a") as fh:
+        fh.write(': 3}\n')
+    r = c.get(url, params={"offset": 18})
+    assert r.text == '{"c": 3}\n' and r.headers["x-offset"] == "27"
+    assert c.get(url, params={"offset": 27}).text == ""
+    f.write_text('{"d": 4}\n')                                              # written afresh: read from the start
+    r = c.get(url, params={"offset": 27})
+    assert r.text == '{"d": 4}\n' and r.headers["x-offset"] == "9"
+    (tmp_path / "secret.txt").write_text("x\n")
+    assert c.get(f"/api/projects/{p.id}/tail/../../secret.txt").status_code == 404
+
+
 def test_board_titles_and_renaming(own_config, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from wholeboard import project, server
@@ -345,3 +372,13 @@ def test_unreachable_ai_server_says_why():
     assert "dropped the connection" in said[dropping] and "forwarder" in said[dropping]
     assert said[closed].startswith("Nothing is answering at")
     srv.close()
+
+
+def test_firmware_finds_the_mcu_not_a_part_whose_description_names_it():
+    from wholeboard import firmware
+    spec = {"components": [
+        {"ref": "D23", "value": "1N4148W", "symbol": "Device:D", "description": "Switch reset from the ESP32"},
+        {"ref": "R109", "value": "10k", "symbol": "Device:R", "description": "ESP32 EN pull-up"},
+        {"ref": "U6", "value": "ESP32-S3-WROOM-1-N16R8", "symbol": "RF_Module:ESP32-S3-WROOM-1"},
+        {"ref": "U9", "value": "module", "description": "ESP32-C3 radio"}]}
+    assert [(c["ref"], fam[0]) for c, fam in firmware.detect(spec)] == [("U6", "esp32s3"), ("U9", "esp32c3")]

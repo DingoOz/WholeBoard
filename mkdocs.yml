@@ -105,6 +105,7 @@ nav:
       - Fit a board to a case: how-to/case-fit.md
       - Make a panel: how-to/panels.md
       - Order the board: how-to/order.md
+      - Publish a board to GitHub: how-to/publish-github.md
       - Build and flash the firmware: how-to/firmware.md
       - Use the checks from other agents (MCP): how-to/mcp.md
       - Design with Claude Code: how-to/claude-code.md

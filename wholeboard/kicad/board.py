@@ -387,20 +387,54 @@ def fixed_copper(spec: dict) -> list[list]:
     return out
 
 
-def add_ground_pour(pcb_path: Path, spec: dict) -> bool:
-    """Add a ground pour on the outer layers (after routing). Returns False if not wanted."""
+POUR_NAME = "tracemaker pour"     # the zones `tracemaker route --pour` writes
+
+
+def ground_pours(spec: dict) -> list[str]:
+    """The outer-layer ground pour as `route --pour` entries (NET@LAYER), or [] if the design has none."""
     spec = design.normalise(spec)
     net = spec["board"].get("ground_pour")
-    names = {n["name"] for n in spec["nets"]}
-    if not net or net not in names:
+    if not net or net not in {n["name"] for n in spec["nets"]}:
+        return []
+    return [f"{net}@{layer}" for layer in (["F.Cu", "B.Cu"] if int(spec["board"]["layers"]) > 1 else ["F.Cu"])]
+
+
+def _zone_net_layers(n: list) -> tuple[str, list[str]]:
+    net = find(n, "net_name") or find(n, "net")
+    layers = find(n, "layer") or find(n, "layers")
+    return (str(net[1]) if net and len(net) > 1 else ""), [str(x) for x in (layers or [])[1:]]
+
+
+def drop_pours(pcb_path: Path) -> int:
+    """Remove the pours a previous `tracemaker route --pour` wrote (before routing the board again with them)."""
+    tree = sexpr.parse(pcb_path.read_text(encoding="utf-8"))
+    keep = [n for n in tree if not (tag(n) == "zone" and find(n, "name") and str(find(n, "name")[1]) == POUR_NAME)]
+    if len(keep) < len(tree):
+        pcb_path.write_text(sexpr.dumps(keep) + "\n", encoding="utf-8")
+    return len(tree) - len(keep)
+
+
+def add_ground_pour(pcb_path: Path, spec: dict) -> bool:
+    """Add the ground pour on the outer layers where routing did not (a TraceMaker without `route --pour`).
+    Returns False if not wanted."""
+    spec = design.normalise(spec)
+    pours = ground_pours(spec)
+    if not pours:
         return False
+    net = pours[0].split("@")[0]
     b, rules = spec["board"], spec["rules"]
     tree = sexpr.parse(pcb_path.read_text(encoding="utf-8"))
     tree = [n for n in tree if not (tag(n) == "zone" and find(n, "name")
                                     and str(find(n, "name")[1]).startswith(f"{net}_") and
                                     str(find(n, "layer")[1]) in ("F.Cu", "B.Cu"))]
+    poured = set()          # layers the router already poured this net on
+    for n in tree:
+        if tag(n) == "zone":
+            zn, lays = _zone_net_layers(n)
+            if zn == net:
+                poured.update(lays)
     insert_at = next((i for i, n in enumerate(tree) if tag(n) == "embedded_fonts"), len(tree))
-    layers = ["F.Cu", "B.Cu"] if int(b["layers"]) > 1 else ["F.Cu"]
+    layers = [p.split("@")[1] for p in pours if p.split("@")[1] not in poured]
     for layer in layers:
         tree.insert(insert_at, zone(net, layer, float(b["width_mm"]), float(b["height_mm"]),
                                     rules["edge_clearance_mm"], rules["clearance_mm"]))

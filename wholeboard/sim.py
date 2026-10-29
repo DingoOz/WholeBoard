@@ -1687,12 +1687,16 @@ def _analyse(nl: Netlist, plan: dict, data: dict, res: dict) -> None:
             for node, cur in ((p.data["in"], r["current_ma"]), (p.data["out"], max(r["current_ma"], r.get("peak_ma") or 0))):
                 net = nl.net_of_node(node)
                 net_i[net] = max(net_i.get(net, 0), cur)
+    load_nets = {ld["ref"]: ld["nets"] for ld in nl.loads}
     for p in nl.parts:
         r = next((x for x in rows if x["ref"] == p.ref), None)
         if r and r.get("current_ma"):
-            for net in p.pads.values():
+            # an IC's supply current flows in its supply pins (shared as the model shares it), not its signal pins
+            nets = load_nets.get(p.ref)
+            share = float(r["current_ma"]) / (len(nets) if nets else 1)
+            for net in nets or p.pads.values():
                 if net and net != nl.ground:
-                    net_i[net] = max(net_i.get(net, 0), float(r["current_ma"]))
+                    net_i[net] = max(net_i.get(net, 0), share)
     if supplies:
         net_i[nl.ground] = sum(s.get("peak_ma") or 0 for s in supplies if s["kind"] != "signal")
     res["net_current_ma"] = {k: round(v, 2) for k, v in net_i.items()}
