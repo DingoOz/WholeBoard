@@ -114,8 +114,9 @@ def _stream(cmd: list[str], log, cancel: threading.Event | None, timeout: float)
 
 def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "routable",
           scratch: bool = True, seconds: float | None = None, flip: bool = False,
-          keep_side: list[str] | None = None) -> dict:
-    """flip: surface-mount parts may go on the bottom side (keep_side: references that stay where they are)."""
+          keep_side: list[str] | None = None, live: Path | None = None) -> dict:
+    """flip: surface-mount parts may go on the bottom side (keep_side: references that stay where they are).
+    live: the placer writes its frames here as it works (see place_live), for the page's live view."""
     cfg = config.load()
     exe = find("tracemaker-place", cfg)
     if not exe:
@@ -128,6 +129,8 @@ def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "rout
         args.append("--flip")
         if keep_side:
             args += ["--keep-side", ",".join(keep_side)]
+    if live and place_live(cfg):
+        args += ["--live", str(_wsl_path(live) if cfg["tools"].get("tracemaker_wsl") else live)]
     _copy_project(pcb_in, pcb_out)
     # routable mode trial-routes each candidate placement; on some footprints (a module whose thermal vias sit under
     # its exposed pad) those trials never succeed and it overruns its time, so it gets a tighter limit and a fallback
@@ -161,6 +164,11 @@ def _has_option(name: str, args: list[str], option: str, cfg: dict | None) -> bo
         except (OSError, subprocess.SubprocessError):
             _HELP[key] = ""
     return option in _HELP[key].split()
+
+
+def place_live(cfg: dict | None = None) -> bool:
+    """Whether this tracemaker-place streams its placement (--live)."""
+    return _has_option("tracemaker-place", ["--help"], "--live", cfg)
 
 
 def route_pours(cfg: dict | None = None) -> bool:

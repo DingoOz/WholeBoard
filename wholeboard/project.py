@@ -108,6 +108,11 @@ class Project:
         rel = path.resolve().relative_to(self.root.resolve()).as_posix()
         return f"/api/projects/{self.id}/files/{rel}?v={int(time.time() * 1000)}"
 
+    def tail_url(self, path: Path) -> str:
+        """For a file a tool is still appending lines to (read with the server's tail endpoint)."""
+        rel = path.resolve().relative_to(self.root.resolve()).as_posix()
+        return f"/api/projects/{self.id}/tail/{rel}"
+
     def display_title(self) -> str:
         """The name the user gave it, else the designer's title, else the design's name, else the request."""
         s, spec = self.state, self.state.get("spec") or {}

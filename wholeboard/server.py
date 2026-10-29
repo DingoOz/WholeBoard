@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__, auth, config, design, enclosure, mcp, ngspice, pipeline, publish, revisions, router
@@ -740,6 +740,30 @@ def project_file(pid: str, path: str):
     if not f.is_relative_to(root) or not f.is_file():
         raise HTTPException(404, "file not found")
     return FileResponse(f, headers={"Cache-Control": "no-store"})
+
+
+TAIL_CHUNK = 8 << 20
+
+
+@app.get("/api/projects/{pid}/tail/{path:path}")
+def tail_file(pid: str, path: str, offset: int = 0):
+    """The complete lines a running tool has appended to a file since `offset`; X-Offset is where to read next.
+    204 while there is no such file (the tool has not started writing it, or it was removed when the tool ended)."""
+    p = _project(pid)
+    root = p.root.resolve()
+    f = (root / path).resolve()
+    if not f.is_relative_to(root):
+        raise HTTPException(404, "file not found")
+    if not f.is_file():
+        return Response(status_code=204, headers={"X-Offset": "0", "Cache-Control": "no-store"})
+    if offset > f.stat().st_size:       # written afresh since the last read
+        offset = 0
+    with f.open("rb") as fh:
+        fh.seek(max(0, offset))
+        data = fh.read(TAIL_CHUNK)
+    end = data.rfind(b"\n") + 1
+    return Response(data[:end], media_type="application/x-ndjson",
+                    headers={"X-Offset": str(max(0, offset) + end), "Cache-Control": "no-store"})
 
 
 @app.post("/api/projects/{pid}/open-folder")

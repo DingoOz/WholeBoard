@@ -409,6 +409,32 @@ def test_place_falls_back_to_full_mode(tmp_path, monkeypatch):
     assert "without the routing check" in logs[0]
 
 
+def test_place_streams_live_only_when_the_placer_can(tmp_path, monkeypatch):
+    from wholeboard import router
+    new, old = tmp_path / "new-place", tmp_path / "old-place"
+    new.write_text("#!/bin/sh\necho '  --record TEXT  timelapse'\necho '  --live TEXT  as it changes'\n")
+    old.write_text("#!/bin/sh\necho '  --record TEXT  timelapse'\necho '  --liveness INT  not it'\n")
+    for f in (new, old):
+        f.chmod(0o755)
+    assert router.place_live({"tools": {"tracemaker_place": str(new)}})
+    assert not router.place_live({"tools": {"tracemaker_place": str(old)}})
+    cmds = []
+
+    def fake_stream(cmd, log, cancel, timeout):
+        cmds.append(cmd)
+        Path(cmd[cmd.index("-o") + 1]).write_text("pcb")
+        return 0
+    monkeypatch.setattr(router.config, "load", lambda: {"tools": {"tracemaker_place": str(new)}})
+    monkeypatch.setattr(router, "_stream", fake_stream)
+    monkeypatch.setattr(router, "_copy_project", lambda a, b: None)
+    live = tmp_path / "b-2-placed.live.jsonl"
+    router.place(tmp_path / "in.kicad_pcb", tmp_path / "out.kicad_pcb", seconds=10, live=live)
+    assert cmds[-1][cmds[-1].index("--live") + 1] == str(live)
+    monkeypatch.setattr(router.config, "load", lambda: {"tools": {"tracemaker_place": str(old)}})
+    router.place(tmp_path / "in.kicad_pcb", tmp_path / "out.kicad_pcb", seconds=10, live=live)
+    assert "--live" not in cmds[-1]
+
+
 @needs_libs
 def test_test_points_fixed_along_an_edge_clear_of_holes():
     import math

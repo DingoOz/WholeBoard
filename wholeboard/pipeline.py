@@ -232,13 +232,21 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
     movable = [c for c in spec["components"] if (c.get("placement") or {}).get("x_mm") is None]
     both = bool(spec["board"].get("double_sided"))
     p.step("place", "running", "TraceMaker is placing the parts" + (" on both sides" if both else ""))
+    live = rdir / f"{name}-2-placed.live.jsonl"
+    if router.place_live(cfg):
+        live.unlink(missing_ok=True)
+        p.visual("place", "live", "Placing the parts", url=p.tail_url(live),
+                 base=p.file_url(gen.parent / f"{gen.stem}.geo.json"))
     try:
         router.place(gen, placed, log=lambda s: p.log("place", s), cancel=p.cancel,
                      mode="routable", scratch=True, flip=both,
-                     keep_side=[c["ref"] for c in spec["components"] if (c.get("placement") or {}).get("side")])
+                     keep_side=[c["ref"] for c in spec["components"] if (c.get("placement") or {}).get("side")],
+                     live=live)
     except Exception as e:  # noqa: BLE001
         p.step("place", "error", str(e))
         return {**result, "ok": False, "stage": "placement", "errors": [str(e)]}
+    finally:
+        live.unlink(missing_ok=True)    # only for watching; the placed board is the result
     _check(p)
     geo = _board_visual(p, "place", placed, "Placed parts with air wires")
     off = _off_board(geo)
