@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import socket
 import threading
 import time
 import webbrowser
@@ -46,7 +45,7 @@ def main() -> None:
         threading.Thread(target=lambda: (time.sleep(1.2), webbrowser.open(url)), daemon=True).start()
     print(f"WholeBoard is running at {url}  (Ctrl+C to stop)")
     if args.host in ("0.0.0.0", "::"):
-        for ip in _lan_addresses():
+        for ip in auth.lan_addresses():
             print(f"  from other machines: http://{ip}:{args.port}/")
         if auth.enabled():
             print("  Other computers must log in with the password (wholeboard --clear-password removes it).")
@@ -54,23 +53,6 @@ def main() -> None:
             print("  Anyone who can reach this port can use WholeBoard and your AI key. Use it on a trusted network,")
             print("  or set a password with: wholeboard --set-password")
     uvicorn.run("wholeboard.server:app", host=args.host, port=args.port, log_level="warning")
-
-
-def _lan_addresses() -> list[str]:
-    found = []
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("192.0.2.1", 9))  # no packet is sent; this just picks the outgoing interface
-            found.append(s.getsockname()[0])
-    except OSError:
-        pass
-    try:
-        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
-            if not ip.startswith("127.") and ip not in found:
-                found.append(ip)
-    except OSError:
-        pass
-    return found
 
 
 if __name__ == "__main__":

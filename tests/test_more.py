@@ -488,6 +488,27 @@ def test_antenna_modules_keep_copper_away():
 
 
 @needs_libs
+def test_a_placed_modules_keepout_moves_with_it():
+    """A footprint's zone is in board coordinates in a .kicad_pcb, so it is moved, turned and flipped with the part."""
+    from wholeboard.kicad import board
+    fp = libs.load_footprint("RF_Module:ESP32-C3-WROOM-02")      # keep-out (-14, -7.1)..(14, -18.1) in the footprint
+
+    def keepout(**kw):
+        node = board.footprint_instance(fp, "U5", "x", 122.25, 118.4, **kw)
+        zone = next(c for c in node if sexpr.tag(c) == "zone")
+        pts = [(sexpr.num(p[1]), sexpr.num(p[2])) for p in sexpr.walk(zone) if sexpr.tag(p) == "xy"]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        return (round(min(xs), 3), round(min(ys), 3), round(max(xs), 3), round(max(ys), 3)), sexpr.dumps(zone)
+
+    assert keepout()[0] == (108.25, 100.3, 136.25, 111.3)                   # over the antenna, above the pads
+    assert keepout(rot=90)[0] == (104.15, 104.4, 115.15, 132.4)              # antenna turned to the left
+    assert keepout(rot=180)[0] == (108.25, 125.5, 136.25, 136.5)
+    box, text = keepout(bottom=True)
+    assert box == (108.25, 125.5, 136.25, 136.5)                            # flipped: below the origin
+    assert '"F.Cu"' in text and '"B.Cu"' in text
+
+
+@needs_libs
 @pytest.mark.parametrize("bid", ["ethernet_lan8720a", "usb_pd_ch224k_12v", "buck_tps563201_3v3", "stm32g030_min"])
 def test_new_blocks_wire_up(bid, tmp_path):
     from wholeboard.kicad import cli, schematic
@@ -541,3 +562,32 @@ def test_route_pours_only_when_tracemaker_can(tmp_path):
         f.chmod(0o755)
     assert router.route_pours({"tools": {"tracemaker": str(new)}})
     assert not router.route_pours({"tools": {"tracemaker": str(old)}})     # only `route --help` counts
+
+
+def test_a_fixed_parts_courtyard_turns_with_it():
+    """Test pads keep clear of a part at 180 or 270 degrees, not of where it would be unturned."""
+    c = {"ref": "J1", "placement": {"x_mm": 10, "y_mm": 10, "rotation": 180}}
+    assert design._placed_courtyard(c, (-1, -2, 5, 3)) == (5, 7, 11, 12)
+    c["placement"]["rotation"] = 270
+    assert tuple(round(v, 6) for v in design._placed_courtyard(c, (-1, -2, 5, 3))) == (7, 9, 12, 15)
+
+
+def test_the_tps563201_buck_has_its_reference_voltage():
+    for b in blocks.BUILTIN:
+        if b["id"].startswith("buck_tps563201_"):
+            u1 = next(c for c in b["components"] if c["ref"] == "U1")
+            assert u1["sim"]["vref"] == 0.768
+
+
+@needs_libs
+def test_pads_of_one_footprint_closer_than_the_clearance():
+    """The NexFET's source-sense and gate pads are 0.14 mm apart: an error at 0.15 mm clearance, fine at 0.14."""
+    def gaps(clearance):
+        spec = {"name": "t", "board": {"width_mm": 30, "height_mm": 30}, "rules": {"clearance_mm": clearance},
+                "components": [{"ref": "Q1", "footprint": "Package_SON:VSON-8_3.3x3.3mm_P0.65mm_NexFET", "lcsc": "C1"}],
+                "nets": [{"name": "S", "pins": ["Q1.1", "Q1.2", "Q1.3"]}, {"name": "G", "pins": ["Q1.4"]},
+                         {"name": "D", "pins": ["Q1.5"]}]}
+        return [e for e in design.validate(spec).errors if "apart, under" in e]
+    found = gaps(0.15)
+    assert len(found) == 1 and "pads 3 and 4" in found[0] and "0.140 mm" in found[0] and "to 0.14 or less" in found[0]
+    assert not gaps(0.14)

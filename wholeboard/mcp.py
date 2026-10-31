@@ -317,6 +317,14 @@ def _try(fn):
         return False, e
 
 
+def _lan(r: dict) -> dict:
+    """The board's links from other machines on the LAN, when WholeBoard listens there."""
+    if not r.get("lan_urls"):
+        return {}
+    return {"lan_urls": r["lan_urls"], "lan_note": "The url works only on the computer running WholeBoard. If the user "
+            "is on another machine (an SSH session, a laptop), give them a lan_urls link instead."}
+
+
 def _brief(state: dict, title: str, url: str) -> dict:
     return {"board": state["id"], "title": title, "url": url, "status": state.get("status"),
             "status_note": state.get("status_note"), "revision": state.get("revision"),
@@ -334,7 +342,7 @@ def design_call(name: str, args: dict, progress=None) -> list[dict]:
     if name == "new_board":
         r = _http("POST", "/api/projects", {"prompt": str(args["request"]), "driver": "claude-code"})
         _board["id"] = r["id"]
-        return [{"type": "text", "text": json.dumps({"board": r["id"], "url": r["url"], "note":
+        return [{"type": "text", "text": json.dumps({"board": r["id"], "url": r["url"], **_lan(r), "note":
                  "Give the user this link: the board builds there live. Ask your questions, then search for parts."})}]
     if name == "list_boards":
         rows = [{k: b.get(k) for k in ("id", "title", "status", "total")} for b in _http("GET", "/api/projects")
@@ -343,7 +351,7 @@ def design_call(name: str, args: dict, progress=None) -> list[dict]:
     if name == "open_board":
         r = _http("GET", f"/api/projects/{args['board']}")
         _board["id"] = r["state"]["id"]
-        return [{"type": "text", "text": json.dumps(_brief(r["state"], r["title"], f"{_base()}/#{_board['id']}"),
+        return [{"type": "text", "text": json.dumps({**_brief(r["state"], r["title"], f"{_base()}/#{_board['id']}"), **_lan(r)},
                                                      indent=1, default=str)}]
     pid = args.pop("board", None) or _board["id"]
     if not pid:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import platform
 import re
 import shutil
@@ -120,7 +121,6 @@ def status(request: Request, refresh: bool = False):
     if ai["provider"] == "openai":
         ai_label, ai_ready = f"{ai['openai_model']} @ {ai['openai_base_url']}", bool(ai["openai_base_url"])
     else:
-        import os
         ai_label = ai["anthropic_model"]
         ai_ready = bool(ai["anthropic_api_key"] or os.environ.get("ANTHROPIC_API_KEY")
                         or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
@@ -259,7 +259,14 @@ async def create_project(request: Request):
         _agent(p, request).adopt(prompt)
     else:
         _agent(p, request).start(prompt)
-    return {**p.summary(), "url": f"{str(request.base_url).rstrip('/')}/#{p.id}"}
+    return {**p.summary(), "url": f"{str(request.base_url).rstrip('/')}/#{p.id}", "lan_urls": _lan_urls(request, p.id)}
+
+
+def _lan_urls(request: Request, pid: str) -> list[str]:
+    """The board's link from other machines, when WholeBoard listens on the LAN (a 127.0.0.1 link works only here)."""
+    if os.environ.get("WHOLEBOARD_HOST") not in ("0.0.0.0", "::"):
+        return []
+    return [f"http://{ip}:{request.url.port or 80}/#{pid}" for ip in auth.lan_addresses()]
 
 
 @app.post("/api/projects/{pid}/tool")
@@ -428,9 +435,9 @@ def import_prompt(res: dict) -> str:
 
 
 @app.get("/api/projects/{pid}")
-def get_project(pid: str):
+def get_project(pid: str, request: Request):
     p = _project(pid)
-    return {"state": p.state, "events": p.events, "title": p.display_title()}
+    return {"state": p.state, "events": p.events, "title": p.display_title(), "lan_urls": _lan_urls(request, pid)}
 
 
 @app.patch("/api/projects/{pid}")

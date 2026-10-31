@@ -36,6 +36,22 @@ def _left_to_pour(rr: dict, spec: dict) -> bool:
     return bool(net) and 0 < open_ == len(fails) and all(re.match(rf"{re.escape(net)}: \S+ -> zone\b", f) for f in fails)
 
 
+def _same_placement(a: Path, b: Path) -> bool:
+    """Do two boards have every footprint in the same place, side and angle?"""
+    def where(pcb: Path) -> dict:
+        return {f["ref"]: (round(f["x"], 3), round(f["y"], 3), round(f["rot"], 1), f["side"])
+                for f in geometry.read(pcb)["footprints"]}
+    try:
+        return where(a) == where(b)
+    except Exception:  # noqa: BLE001 - when in doubt, route again
+        return False
+
+
+def _route_score(rr: dict) -> tuple[int, int]:
+    """Better routes first: more connections routed, then fewer cut off by the plane refill."""
+    return (rr.get("routed") or 0), -(rr.get("refill_open") or 0)
+
+
 def _board_visual(p: Project, step: str, pcb: Path, title: str) -> dict:
     geo = geometry.read(pcb)
     out = pcb.parent / f"{pcb.stem}.geo.json"
@@ -283,17 +299,30 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
                               view_port=port, embed_origin=view_origin, diff_pairs=impedance.has_pairs(spec),
                               pours=pours)
             if not rr["complete"] and not p.cancel.is_set() and (pours or not _left_to_pour(rr, spec)):
-                p.log("route", "Not every connection routed; nudging the placement and trying again.")
+                p.log("route", ("Not every connection routed" if rr["routed"] != rr["connections"] else
+                                f"{rr['refill_open']} connections were cut off when the planes were refilled")
+                      + "; nudging the placement to route again.")
                 eco = rdir / f"{name}-2b-eco.kicad_pcb"
                 router.place(routed, eco, log=lambda s: p.log("route", s), cancel=p.cancel,
                              mode="eco", scratch=False)
-                if pours:
-                    board.drop_pours(eco)      # poured again for the new copper, not routed against the old fill
-                rr2 = router.route(eco, routed, log=lambda s: p.log("route", s), cancel=p.cancel,
-                                   view_port=port, embed_origin=view_origin, reroute=True,
-                                   diff_pairs=impedance.has_pairs(spec), pours=pours)
-                if (rr2.get("routed") or 0) >= (rr.get("routed") or 0):
-                    rr = rr2
+                if _same_placement(routed, eco):
+                    # the same placement routes the same way: a second full run would only cost the time again
+                    p.log("route", "The nudge moved no parts, so routing again would give the same result; "
+                                   "keeping the first route.")
+                else:
+                    if pours:
+                        board.drop_pours(eco)      # poured again for the new copper, not routed against the old fill
+                    p.log("route", f"Routing again from the nudged placement (up to "
+                                   f"{cfg['tools'].get('route_time_s', 120):g} s more).")
+                    first = routed.with_name(routed.stem + "-first.kicad_pcb")
+                    shutil.copyfile(routed, first)
+                    rr2 = router.route(eco, routed, log=lambda s: p.log("route", s), cancel=p.cancel,
+                                       view_port=port, embed_origin=view_origin, reroute=True,
+                                       diff_pairs=impedance.has_pairs(spec), pours=pours)
+                    if _route_score(rr2) >= _route_score(rr):
+                        rr = rr2
+                    else:                  # the first route was better: put it back
+                        shutil.copyfile(first, routed)
         except Exception as e:  # noqa: BLE001
             p.step("route", "error", str(e))
             return {**result, "ok": False, "stage": "routing", "errors": [str(e)]}
@@ -306,6 +335,12 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
                        "KiCad's DRC checks that the pour reaches them.")
         p.step("route", "warn", f"{rr['routed']}/{rr['connections']} connections, {n} left to the ground pour, "
                                 f"{rr['vias']} vias")
+    elif not rr["complete"] and rr["routed"] == rr["connections"]:
+        # every connection routed, but the refill cut some off a plane: KiCad's DRC, refilling again, decides
+        p.log("route", f"{rr['refill_open']} plane connections were cut off when the planes were refilled; "
+                       "KiCad's DRC checks them.")
+        p.step("route", "warn", f"{rr['routed']}/{rr['connections']} connections, {rr['refill_open']} cut off by "
+                                f"the plane refill, {rr['vias']} vias")
     elif not rr["complete"]:
         p.step("route", "error", f"{rr['routed']} of {rr['connections']} connections routed")
         return {**result, "ok": False, "stage": "routing",

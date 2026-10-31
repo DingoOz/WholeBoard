@@ -82,11 +82,25 @@ def version(cfg: dict | None = None) -> str | None:
         return None
 
 
+TIMED_OUT = -1000                     # what _stream returns when it killed the process for running too long
+
+
+def _ended(code: int, timeout: float) -> str:
+    """How a tool run ended, in words for the log."""
+    return f"timed out after {timeout:.0f} s" if code == TIMED_OUT else f"exit code {code}"
+
+
 def _stream(cmd: list[str], log, cancel: threading.Event | None, timeout: float) -> int:
+    """Run cmd, logging its output. Returns its exit code, or TIMED_OUT if it ran past timeout seconds."""
     env = dict(os.environ)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             bufsize=1, env=env)
-    timer = threading.Timer(timeout, proc.kill)
+    timed_out = threading.Event()
+
+    def expire():
+        timed_out.set()
+        proc.kill()
+    timer = threading.Timer(timeout, expire)
     timer.start()
     done = threading.Event()
 
@@ -106,7 +120,8 @@ def _stream(cmd: list[str], log, cancel: threading.Event | None, timeout: float)
             if cancel is not None and cancel.is_set():
                 proc.kill()
                 break
-        return proc.wait()
+        code = proc.wait()
+        return TIMED_OUT if timed_out.is_set() else code
     finally:
         done.set()
         timer.cancel()
@@ -134,14 +149,16 @@ def place(pcb_in: Path, pcb_out: Path, log=print, cancel=None, mode: str = "rout
     _copy_project(pcb_in, pcb_out)
     # routable mode trial-routes each candidate placement; on some footprints (a module whose thermal vias sit under
     # its exposed pad) those trials never succeed and it overruns its time, so it gets a tighter limit and a fallback
-    code = _stream(_cmd(exe, args, cfg), log, cancel, timeout=t * (3 if mode == "routable" else 6) + 120)
+    limit = t * (3 if mode == "routable" else 6) + 120
+    code = _stream(_cmd(exe, args, cfg), log, cancel, timeout=limit)
     if (code != 0 or not pcb_out.exists()) and mode == "routable" and not (cancel and cancel.is_set()):
-        log(f"Routability-checked placement did not finish (exit code {code}); placing without the routing check.")
+        log(f"Routability-checked placement did not finish ({_ended(code, limit)}); placing without the routing check.")
         pcb_out.unlink(missing_ok=True)
         args[args.index("--mode") + 1] = "full"
-        code = _stream(_cmd(exe, args, cfg), log, cancel, timeout=t * 6 + 120)
+        limit = t * 6 + 120
+        code = _stream(_cmd(exe, args, cfg), log, cancel, timeout=limit)
     if code != 0 or not pcb_out.exists():
-        raise RuntimeError(f"tracemaker-place exited with code {code}")
+        raise RuntimeError(f"tracemaker-place did not finish ({_ended(code, limit)})")
     return {"ok": True}
 
 
@@ -229,14 +246,18 @@ def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | 
     _copy_project(pcb_in, pcb_out)
     code = _stream(_cmd(exe, ["route", *args], cfg), log, cancel, timeout=t * 10 + 300)
     if not pcb_out.exists():
-        raise RuntimeError(f"tracemaker route exited with code {code} and wrote no board")
+        raise RuntimeError(f"tracemaker route wrote no board ({_ended(code, t * 10 + 300)})")
     data = json.loads(summary.read_text()) if summary.exists() else {}
     failures = data.get("failures") or []
+    # a plane connection whose via lands in a sliver of the plane, cut off when the plane is refilled, is routed but
+    # not connected: KiCad's DRC reports it, so it counts as open
+    refill_open = int(data.get("unconnected_after_refill") or (data.get("refill") or {}).get("unconnected") or 0)
     return {
         "routed": data.get("routed"), "connections": data.get("connections"),
         "tracks": data.get("tracks"), "vias": (data.get("style") or {}).get("vias"),
         "seconds": data.get("seconds"), "variant": data.get("variant_name"),
-        "complete": data.get("routed") is not None and data.get("routed") == data.get("connections"),
+        "refill_open": refill_open,
+        "complete": data.get("routed") is not None and data.get("routed") == data.get("connections") and not refill_open,
         "failures": failures[:30],
     }
 

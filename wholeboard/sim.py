@@ -59,6 +59,7 @@ Per component "sim" (only when the automatic model is wrong):
   {"skip": true}                                   leave the part out
   {"vf": 2.0, "max_ma": 20}                        LED forward voltage and current limit
   {"vout": 3.3, "dropout": 0.25, "max_ma": 300}    regulator; "vref": 0.8 for adjustable/switching ones
+  {"pins_map": {"VIN": "2", "FB": "5", "GND": "1"}} pin names for a regulator whose symbol has none
   {"load_ma": 25, "peak_ma": 120}                  IC supply current (typical, peak)
   {"pins": {"PA5": "high", "PB2": "low", "7": 1.8}} IC pins driven high (its supply), low, or to a voltage
   {"closed": [["1", "2"]]}                         switch contacts that are closed (pushbuttons are open
@@ -222,6 +223,11 @@ class Part:
 
     def pad_named(self, *names: str) -> str | None:
         want = {n.upper() for n in names}
+        # sim.pins_map names the pins of a part whose symbol does not (or that has no symbol)
+        given = {str(k).upper(): str(v) for k, v in (self.sim.get("pins_map") or {}).items()}
+        for n in names:
+            if n.upper() in given and self.pads.get(given[n.upper()]):
+                return given[n.upper()]
         for pad, nm in self.names.items():
             if nm in want and self.pads.get(pad):
                 return pad
@@ -321,6 +327,7 @@ class Netlist:
         self.loads: list[dict] = []
         self.ramps: list[str] = []    # supplies ramp up from 0 V in the transient, to show start-up
         self.nodes: dict[str, str] = {}
+        self.left_out: list[str] = []  # regulators that could not be modelled, so their rails may have no source
         self.ground = self._ground_net()
         self.pin_net = design.pin_net_map(self.spec)
         self.net_pins: dict[str, list[str]] = {}
@@ -352,6 +359,40 @@ class Netlist:
             if v == node:
                 return k
         return node
+
+    def floating_rails(self) -> dict[str, str]:
+        """Power nets that a left-out regulator should feed and nothing else powers: net -> the regulator.
+
+        A rail counts as fed when a source or a modelled regulator drives it, or it joins a fed net through an
+        inductor, ferrite, fuse, jumper, diode, switch or transistor. A left-out regulator's rails are the unfed
+        power nets within two passives of its pads (its inductor to the output, its feedback divider)."""
+        def links(kinds):
+            for p in self.parts:
+                if p.kind in kinds:
+                    nets = [n for n in p.pads.values() if n and n != self.ground]
+                    for a in nets:
+                        for b in nets:
+                            if a != b:
+                                yield a, b
+        through = {"inductor", "ferrite", "fuse", "jumper", "diode", "switch", "mosfet", "bjt"}
+        fed = {s["net"] for s in self.sources} | set(self.driven)
+        grow = list(links(through))
+        while True:
+            more = {b for a, b in grow if a in fed and b not in fed}
+            if not more:
+                break
+            fed |= more
+        near_links = list(links({"inductor", "ferrite", "resistor", "diode", "fuse", "jumper"}))
+        out: dict[str, str] = {}
+        for ref in self.left_out:
+            p = next(q for q in self.parts if q.ref == ref)
+            near = {n for n in p.pads.values() if n and n != self.ground}
+            for _ in range(2):
+                near |= {b for a, b in near_links if a in near}
+            for net in near:
+                if self.is_power(net) and net not in fed and self.net_pins.get(net):
+                    out.setdefault(net, ref)
+        return out
 
     def is_power(self, net: str | None) -> bool:
         if not net or net == self.ground:
@@ -783,8 +824,10 @@ class Netlist:
         for p in leds.values():
             k = p.pad_named("K") or "1"
             a = p.pad_named("A") or "2"
-            led_pins[p.pads.get(a)] = "high"
-            led_pins[p.pads.get(k)] = "low"
+            # an LED on a rail (anode on +3V3, cathode on GND) says nothing about which pin drives it
+            for net, level in ((p.pads.get(a), "high"), (p.pads.get(k), "low")):
+                if net and not self.is_power(net) and net != self.ground:
+                    led_pins[net] = level
         res = [p for p in self.parts if p.kind == "resistor" and len([n for n in p.pads.values() if n]) == 2]
         for p in self.parts:
             if p.kind != "ic" or "supply" not in p.data:
@@ -905,10 +948,12 @@ class Netlist:
         adj = p.pad_named("ADJ", "FB")
         en = p.pad_named("EN", "CE", "SHDN", "ON", "INH")
         gnd = p.pad_named("GND", "VSS")
-        if not p.names:
+        if not p.names and not p.sim.get("pins_map"):
             vi, gnd, vo = ("3", "1", "2") if "1117" in p.part_no else ("1", "2", "3")
         if not vi or not vo or not p.pads.get(vi) or not p.pads.get(vo):
-            self.assumptions.append(f"{p.ref}: regulator pins not recognised; left out (give sim.spice)")
+            self.assumptions.append(f"{p.ref}: regulator pins not recognised; left out (name its pins with "
+                                    'sim.pins_map, e.g. {"VIN": "3", "VOUT": "2", "GND": "1"}, or give sim.spice)')
+            self.left_out.append(p.ref)
             return
         fam = next((f for f in LDO_FAMILIES if re.search(f[0], p.part_no)), None)
         _, _, drop, imax, iq, vin_max = fam or (None, *LDO_DEFAULT)
@@ -936,6 +981,7 @@ class Netlist:
             vout, how = self._vout_guess(p, p.pads[vo])
             if vout is None:
                 self.assumptions.append(f"{p.ref}: output voltage unknown; left out (set sim.vout)")
+                self.left_out.append(p.ref)
                 return
             target = f"(v({n_g}) + {vout:g})"
         enable = f" * {_u(f'v({self.node(p.pads[en])},{n_g})-0.9')}" if en and p.pads.get(en) else ""
@@ -958,7 +1004,9 @@ class Netlist:
         gnd = p.pad_named("GND", "PGND", "AGND")
         en = p.pad_named("EN", "CE", "SHDN", "RUN")
         if not vi or not p.pads.get(vi):
-            self.assumptions.append(f"{p.ref}: switching regulator pins not recognised; left out")
+            self.assumptions.append(f"{p.ref}: switching regulator pins not recognised; left out (name its "
+                                    'pins with sim.pins_map, e.g. {"VIN": "2", "FB": "5", "GND": "1", "EN": "3"})')
+            self.left_out.append(p.ref)
             return
         out_net, vout, how = None, p.sim.get("vout"), "sim.vout"
         fb_net = p.pads.get(fb) if fb else None
@@ -985,6 +1033,7 @@ class Netlist:
         if out_net is None or vout is None:
             self.assumptions.append(f"{p.ref}: switching regulator output not found; left out (set sim.vout "
                                     f"and make FB connect to the output divider)")
+            self.left_out.append(p.ref)
             return
         n_in, n_out = self.node(p.pads[vi]), self.node(out_net)
         n_g = self.node(p.pads.get(gnd)) if gnd and p.pads.get(gnd) else "0"
@@ -1439,11 +1488,18 @@ def _analyse(nl: Netlist, plan: dict, data: dict, res: dict) -> None:
             return [x - y for x, y in zip(wa, wb)]
         return [V(a) - V(b)]
 
+    # a rail whose regulator could not be modelled settles anywhere (-1000 V was seen): say so once, and check
+    # nothing on it, rather than report every part on it as overstressed
+    floating = nl.floating_rails()
+    for net, ref in floating.items():
+        P.append(f"{net} has no source in the simulation: {ref} could not be modelled, so nothing on {net} is "
+                 f"checked. Name {ref}'s pins with sim.pins_map (and set sim.vout or sim.vref).")
+
     # ---- rails and signals
     rails, signals = [], []
     for net, node in nl.nodes.items():
         w = tw(node)
-        if nl.is_power(net):
+        if nl.is_power(net) and net not in floating:
             lo, hi = (min(w[k0:]), max(w[k0:])) if w and len(w) > k0 else (V(node), V(node))
             rails.append({"net": net, "volts": round(settled(node), 4), "op": round(V(node), 4),
                           "peak_load": round(V(node, opk), 4), "ripple_v": round(hi - lo, 4)})
@@ -1492,6 +1548,8 @@ def _analyse(nl: Netlist, plan: dict, data: dict, res: dict) -> None:
                      **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in kv.items()}})
 
     for p in nl.parts:
+        if floating and not floating.keys().isdisjoint(p.pads.values()):
+            continue
         d = p.data
         k = p.kind
         if k == "resistor" and d.get("nodes"):

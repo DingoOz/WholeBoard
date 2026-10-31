@@ -222,6 +222,7 @@ class Pad:
     angle: float = 0.0
     drill: float = 0.0
     layers: list[str] = field(default_factory=list)
+    rratio: float = 0.0  # a roundrect's corner radius over its shorter side
 
 
 @dataclass
@@ -280,6 +281,7 @@ def load_footprint(lib_id: str) -> Footprint | None:
         size = find(p, "size") or ["size", 0, 0]
         drill = find(p, "drill")
         layers = find(p, "layers") or ["layers"]
+        rr = find(p, "roundrect_rratio")
         d = 0.0
         if drill:
             vals = [num(v) for v in drill[1:] if not isinstance(v, list) and str(v) != "oval"]
@@ -288,6 +290,7 @@ def load_footprint(lib_id: str) -> Footprint | None:
             name=str(name), kind=str(p[2]), shape=str(p[3]),
             x=num(at[1]), y=num(at[2]), angle=num(at[3]) if len(at) > 3 else 0.0,
             w=num(size[1]), h=num(size[2]), drill=d, layers=[str(x) for x in layers[1:]],
+            rratio=num(rr[1]) if rr else 0.25 if str(p[3]) == "roundrect" else 0.0,
         ))
     xs: list[float] = []
     ys: list[float] = []
