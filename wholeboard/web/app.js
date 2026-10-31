@@ -49,7 +49,7 @@ const EXAMPLES = [
 ];
 
 const S = { status: null, steps: [], projects: [], pid: null, project: null, ws: null, visuals: {},
-            selStep: null, follow: true, lastSeq: 0, logs: [], questions: {}, qa: [], pending: new Set(), finish: null, title: "" };
+            selStep: null, follow: true, lastSeq: 0, logs: [], questions: {}, qa: [], pending: new Set(), finish: null, title: "", lastStamp: 0 };
 
 // "3 min ago" for the boards list
 const ago = t => {
@@ -255,7 +255,7 @@ function showHome() {
 
 async function openProject(pid) {
   if (S.ws) { S.ws.onclose = null; S.ws.close(); S.ws = null; }
-  S.pid = pid; S.visuals = {}; S.selStep = null; S.follow = true; S.lastSeq = 0; S.logs = []; S.questions = {};
+  S.pid = pid; S.visuals = {}; S.selStep = null; S.follow = true; S.lastSeq = 0; S.logs = []; S.questions = {}; S.lastStamp = 0;
   S.qa = []; S.pending.clear(); S.finish = null; S.liveBoard = null; S.liveViewer = false;
   for (const k in liveShown) { liveShown[k]?.view?.destroy(); delete liveShown[k]; }
   $("#live").innerHTML = "";
@@ -295,6 +295,7 @@ function connect() {
 function handleEvent(e, replay) {
   if (e.seq <= S.lastSeq) return;
   S.lastSeq = e.seq;
+  if (["chat", "tool", "question", "finish"].includes(e.type)) chatStamp(e.t);
   switch (e.type) {
     case "chat": addMsg(e.role, e.text); break;
     case "tool": addMsg("tool", e.text); break;
@@ -325,6 +326,15 @@ function handleEvent(e, replay) {
       break;
   }
   if (!replay) { scrollChat(); signal(); if (["visual", "step", "status"].includes(e.type)) renderLive(); }
+}
+
+// The time above a chat message, when more than 15 seconds have passed since the last time shown.
+function chatStamp(t) {
+  if (!t || t - S.lastStamp <= 15) return;
+  S.lastStamp = t;
+  const d = new Date(t * 1000), time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const day = d.toDateString() === new Date().toDateString() ? "" : d.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) + ", ";
+  chatAppend(el("div", { class: "stamp" }, el("time", { datetime: d.toISOString(), title: d.toLocaleString() }, day + time)));
 }
 
 function scrollChat() { const c = $("#chat"); c.scrollTop = c.scrollHeight; }
@@ -685,17 +695,66 @@ function partsCard() {
   for (const l of quoteOf()?.components?.lines || []) for (const r of l.refs) byRef[r] = l;
   const copper = comps.filter(c => copperOnly(c.footprint)).length;
   const lines = new Set(comps.filter(c => c.lcsc).map(c => c.lcsc)).size;
+  const rank = { basic: 0, preferred: 1, extended: 2 };
   const rows = comps.map(c => {
-    const l = byRef[c.ref], cu = copperOnly(c.footprint);
-    return [el("b", {}, c.ref), c.value || "", el("span", { class: "pins" }, (c.footprint || "").split(":").pop()),
+    const l = byRef[c.ref], cu = copperOnly(c.footprint), pkg = (c.footprint || "").split(":").pop();
+    const cells = [el("b", {}, c.ref), c.value || "", el("span", { class: "pins" }, pkg),
       c.lcsc ? el("a", { href: `https://jlcpcb.com/partdetail/${c.lcsc}`, target: "_blank", rel: "noopener" }, c.lcsc) : el("span", { class: "muted" }, cu ? "no part needed" : "–"),
       l?.library_type ? el("span", { class: "tag " + l.library_type }, l.library_type) : (!c.lcsc && !cu ? el("span", { class: "tag warn" }, "fit by hand") : ""),
       l?.stock != null ? l.stock.toLocaleString() : "", el("span", { class: "muted" }, c.description || "")];
+    // what each column sorts by: values by size, LCSC numbers and stock as numbers, types basic first
+    cells.keys = [c.ref, siValue(c.value) ?? c.value ?? "", pkg, c.lcsc ? +c.lcsc.slice(1) : null,
+      l?.library_type ? rank[l.library_type] ?? 3 : null, l?.stock ?? null, c.description || ""];
+    return cells;
   });
   return card(`Parts (${comps.length})`, el("div", {},
     el("p", { class: "muted parts-note" }, `${lines} JLCPCB part numbers` + (copper ? `; ${copper} copper-only (jumpers, test pads, holes) with nothing to buy` : "") +
       (quoteOf() ? "." : ". Library type and stock appear once the quote is made.")),
-    table(["Ref", "Value", "Package", "LCSC", "Type", "Stock", "Description"], rows)));
+    sortableTable("parts", ["Ref", "Value", "Package", "LCSC", "Type", "Stock", "Description"], rows)));
+}
+
+// "10k", "4.7uF", "100nF", "4k7" as a number, so values sort by size; null for anything else ("red", "ESP32").
+function siValue(v) {
+  const m = String(v ?? "").trim().match(/^(\d+(?:\.\d+)?)\s*([pnuµmkKMGR]?)(\d*)\s*(?:[ΩFHVAW]|ohms?)?\b/i);
+  if (!m) return null;
+  const mult = { p: 1e-12, n: 1e-9, u: 1e-6, µ: 1e-6, m: 1e-3, k: 1e3, K: 1e3, M: 1e6, G: 1e9, R: 1, r: 1 }[m[2]] ?? 1;
+  return parseFloat(m[1] + (m[3] ? "." + m[3] : "")) * mult;     // 4k7 is 4.7k
+}
+
+// A table whose column headings sort it: once ascending, again descending. Each row is its cells with a
+// .keys array (what each column sorts by); empty keys go last. The order is kept per table name while the
+// page is open, so it survives the stage being redrawn.
+const tableSort = {};
+function sortableTable(name, head, rows) {
+  const tbody = el("tbody");
+  const ths = head.map((h, i) => el("th", { "aria-sort": "none" },
+    el("button", { type: "button", class: "th-sort", onclick: () => {
+      const s = tableSort[name];
+      tableSort[name] = { col: i, dir: s?.col === i && s.dir === 1 ? -1 : 1 };
+      fill();
+    } }, h, el("span", { class: "th-arrow", "aria-hidden": "true" }))));
+  const cmp = (a, b) => typeof a === "number" && typeof b === "number" ? a - b
+    : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+  const fill = () => {
+    const s = tableSort[name];
+    let shown = rows;
+    if (s) {
+      shown = rows.map((r, i) => [r, i]).sort(([a, i], [b, j]) => {
+        const ka = a.keys?.[s.col], kb = b.keys?.[s.col], blank = x => x === null || x === undefined || x === "";
+        if (blank(ka) !== blank(kb)) return blank(ka) - blank(kb);          // blanks last, either way round
+        const typed = typeof ka === typeof kb ? cmp(ka, kb) : typeof ka === "number" ? -1 : 1;
+        return typed * s.dir || i - j;
+      }).map(([r]) => r);
+    }
+    ths.forEach((th, i) => {
+      const on = s?.col === i;
+      th.setAttribute("aria-sort", on ? (s.dir === 1 ? "ascending" : "descending") : "none");
+      th.querySelector(".th-arrow").textContent = on ? (s.dir === 1 ? "▲" : "▼") : "";
+    });
+    tbody.replaceChildren(...shown.map(r => el("tr", {}, r.map(c => el("td", {}, c ?? "–")))));
+  };
+  fill();
+  return el("table", { class: "sortable" }, el("thead", {}, el("tr", {}, ths)), tbody);
 }
 
 // The Summary step: the finished board on one page.
@@ -769,6 +828,147 @@ function card(title, body, opts = {}) {
   return el("div", { class: "vis" + (opts.fill ? " fill" : "") }, el("h4", {}, el("span", {}, title), opts.right || ""), el("div", { class: "body" }, body));
 }
 
+// ------------------------------------------------------------------ findings
+// A problem or warning a check reported, as a list item the user can open for more about it.
+function finding(content, f) {
+  const open = () => showFinding(f);
+  return el("li", { class: "finding", tabindex: 0, role: "button", title: "More about this", onclick: open,
+                    onkeydown: e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } } }, content);
+}
+const findings = (xs, source, severity) => xs.map(x => finding(x, { source, severity, text: x }));
+
+// What each check does, for findings that carry no rule of their own.
+const CHECK_HELP = {
+  import: ["Import", "WholeBoard reads the KiCad project's schematic and board, and lists what it could not bring across or what must be fixed before the board can be built."],
+  netlist: ["Design check", "Before anything is drawn, WholeBoard checks the design: each footprint exists and its pads match the symbol's pins, each net joins at least two pins, and each part is in stock at JLCPCB."],
+  erc: ["Electrical rules check", "KiCad reads the schematic for outputs driving each other, inputs left floating, power pins with nothing to power them and wires that go nowhere."],
+  drc: ["Design rule check", "KiCad measures the finished board against JLCPCB's limits: copper spacing, track widths, hole sizes, the board edge and the silkscreen."],
+  checks: ["Board checks", "WholeBoard works out the current in each track (from the simulation, or estimated), then how much it heats, how much voltage it loses, and how far each chip's supply pins are from a decoupling capacitor."],
+  impedance: ["Controlled impedance", "Traces that need a set impedance (USB, Ethernet, fast buses) are measured: their width, length, vias and stubs, and how closely the pairs and buses match in length."],
+  mains: ["Mains spacing", "Mains voltage needs wide gaps. WholeBoard measures the clearance through the air and the creepage along the board between mains copper and everything else."],
+  case: ["Case fit", "The board is fitted into the chosen case: the parts must clear the lid, and the connectors must line up with holes in its walls."],
+  heat: ["Heat in the box", "How warm the air and the parts get inside the enclosure, from the power the board uses and how much heat leaves through the walls and vents."],
+  review: ["Visual review", "The AI looks at the 3D renders of the board as a reviewer would, for parts, connectors, LEDs and buttons that are missing, crowded or facing the wrong way."],
+  sim: ["Simulation", "ngspice simulates the circuit: the rail voltages, the supply current, the oscillators, and each part against its ratings."],
+  power: ["Power budget", "The current each part draws from each rail is added up, and each regulator is checked for whether it can supply it and how hot it gets."],
+};
+
+// KiCad's rule names, in words: what the rule means and the usual way to fix it.
+const RULE_HELP = {
+  clearance: ["Two pieces of copper on different nets are closer than the board's minimum spacing.", "Move the track or via away, narrow the track there, or route it on the other layer."],
+  hole_clearance: ["A drilled hole is too close to copper on another net.", "Move the track or via away from the hole."],
+  hole_to_hole: ["Two drilled holes are closer than the drill can make them.", "Move the via, or the part with the hole, so the holes are further apart."],
+  copper_edge_clearance: ["Copper is too close to the board edge, where the board is cut out.", "Move the part, track or pour back from the edge."],
+  edge_clearance: ["Copper is too close to the board edge, where the board is cut out.", "Move the part, track or pour back from the edge."],
+  tracks_crossing: ["Two tracks on different nets cross on the same layer, which shorts them.", "Reroute one of them, or move it to the other layer with vias."],
+  shorting_items: ["Copper of two different nets touches: a short circuit.", "Reroute so the two nets no longer touch."],
+  unconnected_items: ["Two pads that should be joined are not connected by copper.", "Route the missing connection, or let the ground pour reach it if it is a ground pad."],
+  track_width: ["A track is narrower or wider than the board's track width rule allows.", "Change the track to a width inside the limits."],
+  connection_width: ["Copper narrows to less than the minimum width somewhere along a connection.", "Widen the narrow neck, or move what is crowding it."],
+  annular_width: ["The copper ring around a hole is thinner than JLCPCB can make reliably.", "Use a larger pad or via diameter, or a smaller drill."],
+  drill_out_of_range: ["A hole is smaller or larger than the drills JLCPCB offers.", "Change the hole to a drill size inside the limits."],
+  via_diameter: ["A via is smaller than the minimum via size.", "Use a larger via."],
+  courtyards_overlap: ["Two parts' keep-out outlines overlap, so they may not fit side by side when assembled.", "Move the parts apart."],
+  missing_courtyard: ["A footprint has no courtyard, so its keep-out area is unknown.", "Usually harmless; check by eye that nothing is crowded against the part."],
+  malformed_courtyard: ["A footprint's courtyard outline is not a closed shape.", "Usually harmless; check by eye that nothing is crowded against the part."],
+  pth_inside_courtyard: ["A plated hole sits inside another part's courtyard.", "Move the hole or the part."],
+  npth_inside_courtyard: ["A mounting or locating hole sits inside another part's courtyard.", "Move the hole or the part."],
+  items_not_allowed: ["Something sits in a keep-out area where it is not allowed.", "Move it out of the keep-out."],
+  zone_has_empty_net: ["A copper pour is not on any net.", "Give the pour a net (usually GND) or remove it."],
+  starved_thermal: ["A pad joins the pour through fewer thermal spokes than the rule asks.", "Clear room around the pad so more spokes reach it, or add a track to it."],
+  isolated_copper: ["A piece of pour is not joined to anything, an island of copper.", "Usually harmless; add a via to stitch it to its net, or remove the island."],
+  track_dangling: ["A track ends without reaching a pad or via.", "Remove the stub or finish the connection."],
+  via_dangling: ["A via is connected on only one layer, or none.", "Remove the via or connect it on both sides."],
+  silk_overlap: ["Two pieces of silkscreen overlap and will be hard to read.", "Move the labels apart. This is cosmetic."],
+  silk_over_copper: ["Silkscreen runs over a pad, where it is cut away when the board is made.", "Move the label off the pad. This is cosmetic."],
+  silk_edge_clearance: ["Silkscreen runs over the board edge and is clipped.", "Move the label inwards. This is cosmetic."],
+  text_height: ["Silkscreen text is smaller than JLCPCB can print legibly.", "Make the text larger. This is cosmetic."],
+  text_thickness: ["Silkscreen text strokes are thinner than JLCPCB can print legibly.", "Make the text strokes thicker. This is cosmetic."],
+  solder_mask_bridge: ["The solder mask between two pads of different nets is too narrow to hold, so solder may bridge them.", "Spread the pads, or accept the risk for fine-pitch chips where it is normal."],
+  invalid_outline: ["The board outline is not a single closed shape.", "Fix the outline so it closes."],
+  duplicate_footprints: ["Two footprints share a reference.", "Rename one of them."],
+  extra_footprint: ["A footprint is on the board but not in the schematic.", "Remove it, or add it to the schematic."],
+  missing_footprint: ["A part in the schematic has no footprint on the board.", "Add the footprint to the board."],
+  net_conflict: ["A pad's net on the board is not the net the schematic gives it.", "Update the board from the schematic."],
+  length_out_of_range: ["A track is longer or shorter than its length rule allows.", "Reroute it shorter, or add length tuning."],
+  skew_out_of_range: ["The traces of a matched pair or bus differ in length by more than allowed.", "Lengthen the shorter traces to match."],
+  too_many_vias: ["A connection uses more vias than its rule allows.", "Reroute it with fewer layer changes."],
+  diff_pair_gap_out_of_range: ["The two traces of a differential pair are further apart or closer than their impedance needs.", "Route the pair together at the set gap."],
+  creepage: ["The distance along the board surface between two nets is shorter than the creepage rule asks.", "Move the copper apart, or cut a slot between them."],
+  pin_not_connected: ["A pin is not connected to anything and has no no-connect marker.", "Wire it, or mark it as not connected if it is meant to be unused."],
+  pin_not_driven: ["An input pin is connected, but nothing drives the net it is on.", "Connect it to an output, a pull-up or pull-down, or a power rail."],
+  power_pin_not_driven: ["A power input pin is on a net with no power output on it.", "Usually a schematic flag: it is fine when the rail comes from a connector or a regulator."],
+  pin_to_pin: ["Two pins that should not be joined are on the same net, for example two outputs.", "Check the wiring between them."],
+  no_connect_connected: ["A pin marked as not connected is wired to something.", "Remove the wire or the no-connect marker."],
+  no_connect_dangling: ["A no-connect marker is not on a pin.", "Remove it or move it onto the pin."],
+  label_dangling: ["A label is not on a wire or pin.", "Move it onto the wire it names."],
+  global_label_dangling: ["A global label is not on a wire or pin.", "Move it onto the wire it names."],
+  wire_dangling: ["A wire ends without reaching a pin or another wire.", "Finish the wire or remove it."],
+  unconnected_wire_endpoint: ["A wire end is not connected to anything.", "Finish the wire or remove it."],
+  multiple_net_names: ["One net has two different names.", "Use one name for it."],
+  duplicate_reference: ["Two symbols share a reference.", "Rename one of them."],
+  similar_labels: ["Two labels differ only in upper and lower case, which is easy to mix up.", "Rename one, or make them the same net."],
+  missing_power_pin: ["A symbol's power pins are hidden or missing from the schematic.", "Check the chip's supply pins are wired."],
+  missing_unit: ["A part with several units has some units missing from the schematic.", "Place the missing units, or connect their pins."],
+  four_way_junction: ["Four wires meet at one point, which is easy to misread.", "Offset one of the joins. This is cosmetic."],
+};
+
+// the parts and nets of this board that a finding names
+function namedIn(text) {
+  const nl = S.visuals.netlist?.netlist || {};
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const has = name => new RegExp(`(^|[^\\w+/.-])${esc(name)}(?![\\w])`).test(text);
+  return { parts: (nl.components || []).filter(c => has(c.ref)), nets: (nl.nets || []).filter(n => n.name.length > 1 && has(n.name)) };
+}
+
+function showFinding(f) {
+  const d = $("#findingDialog"), body = $("#findingBody");
+  const [checkTitle, checkHelp] = CHECK_HELP[f.source] || ["Check", ""];
+  const label = { error: "error", problem: "problem", warning: "warning", note: "note", unconnected: "unconnected pads" }[f.severity] || f.severity;
+  const rule = RULE_HELP[f.type];
+  const all = [f.text, ...(f.items || [])].join("\n");
+  const { parts, nets } = namedIn(all);
+  body.replaceChildren(
+    el("p", { class: "finding-kind" }, el("span", { class: "tag " + (["error", "problem", "unconnected"].includes(f.severity) ? "bad" : "warn") }, `${checkTitle} ${label}`),
+      f.type ? el("code", {}, f.type) : ""),
+    el("h2", { id: "findingTitle" }, f.text));
+  if (f.items?.length) body.append(el("h5", {}, "What it involves"), el("ul", {}, f.items.map(x => el("li", {}, x))));
+  body.append(el("h5", {}, "What this means"), el("p", {}, rule ? rule[0] : checkHelp));
+  if (rule) body.append(el("h5", {}, "The usual fix"), el("p", {}, rule[1]));
+  if (rule && checkHelp) body.append(el("p", { class: "muted" }, `${checkTitle}: ${checkHelp}`));
+
+  // where it is on the board: the points the check gave, or else the parts it names
+  const geoUrl = S.visuals.drc?.board?.url || S.liveBoard?.url;
+  const points = f.points?.length ? f.points : f.pos ? [f.pos] : [];
+  if (geoUrl && (points.length || parts.length)) {
+    const host = el("div", { class: "finding-board" });
+    body.append(el("h5", {}, "Where it is on the board"), host);
+    fetch(geoUrl).then(r => r.json()).then(geo => {
+      if (!d.open || !host.isConnected) return;
+      const refs = new Set(parts.map(c => c.ref));
+      const marks = points.length ? points : geo.footprints.filter(fp => refs.has(fp.ref)).map(fp => ({ x: fp.x, y: fp.y }));
+      if (!marks.length) { host.previousSibling.remove(); host.remove(); return; }
+      // the board is dark in either theme, so the marks use bright colours of their own
+      d._view = new BoardView(host, geo, { marks, markColor: f.severity === "warning" || f.severity === "note" ? "#ffc83d" : "#ff4d6d" });
+    }).catch(() => { host.textContent = "The board could not be loaded."; });
+  }
+  if (parts.length) body.append(el("h5", {}, "Parts it names"), table(["Ref", "Value", "Footprint", "LCSC", "Description"],
+    parts.map(c => [el("b", {}, c.ref), c.value || "", el("span", { class: "pins" }, c.footprint),
+      c.lcsc ? el("a", { href: `https://jlcpcb.com/partdetail/${c.lcsc}`, target: "_blank", rel: "noopener" }, c.lcsc) : "–", el("span", { class: "muted" }, c.description || "")])));
+  if (nets.length) body.append(el("h5", {}, "Nets it names"), table(["Net", "Pins"],
+    nets.slice(0, 8).map(n => [el("b", {}, n.name), el("span", { class: "pins" }, n.pins.join("  "))])));
+
+  $("#findingAsk").onclick = () => {
+    d.close();
+    if ($(".ws-body").classList.contains("chat-hidden")) $("#chatToggle").click();
+    const input = $("#chatInput");
+    input.value = `About the ${checkTitle.toLowerCase()} ${label} “${f.text}${f.items?.length ? " (" + f.items.join(" ↔ ") + ")" : ""}”: `;
+    input.focus(); input.setSelectionRange(input.value.length, input.value.length);
+  };
+  d.onclose = () => { d._view?.destroy(); d._view = null; };
+  d.showModal();
+}
+
 const RENDER = {
   board(v) {
     const host = el("div");
@@ -814,8 +1014,8 @@ const RENDER = {
   },
   netlist(v) {
     const body = el("div");
-    if (v.errors?.length) body.append(el("b", {}, "Problems the designer must fix"), el("ul", { class: "list-err" }, v.errors.map(x => el("li", {}, x))));
-    if (v.warnings?.length) body.append(el("b", {}, "Notes"), el("ul", { class: "list-warn" }, v.warnings.map(x => el("li", {}, x))));
+    if (v.errors?.length) body.append(el("b", {}, "Problems the designer must fix"), el("ul", { class: "list-err" }, findings(v.errors, "netlist", "problem")));
+    if (v.warnings?.length) body.append(el("b", {}, "Notes"), el("ul", { class: "list-warn" }, findings(v.warnings, "netlist", "note")));
     body.append(el("table", {}, el("thead", {}, el("tr", {}, ["Ref", "Value", "Footprint", "LCSC", "Description"].map(h => el("th", {}, h)))),
       el("tbody", {}, v.components.map(c => el("tr", {}, el("td", {}, el("b", {}, c.ref)), el("td", {}, c.value || ""),
         el("td", { class: "pins" }, c.footprint), el("td", {}, c.lcsc ? el("a", { href: `https://jlcpcb.com/partdetail/${c.lcsc}`, target: "_blank" }, c.lcsc) : "–"),
@@ -831,10 +1031,12 @@ const RENDER = {
     const body = el("div", {}, el("div", { class: "stats" },
       stat(r.errors, "errors", r.errors === 0), stat(r.unconnected, "unconnected", r.unconnected === 0),
       el("div", { class: "stat" }, el("div", { class: "v" }, r.warnings), el("div", { class: "l" }, "warnings"))));
-    const list = [...r.error_list, ...r.unconnected_list];
-    if (list.length) body.append(el("ul", { class: "list-err" }, list.map(x => el("li", {}, `${x.description}: ${x.items.join(" ↔ ")}`))));
+    const item = (x, severity) => finding(`${x.description}: ${x.items.join(" ↔ ")}`,
+      { source: "drc", severity, text: x.description, type: x.type || (severity === "unconnected" ? "unconnected_items" : null), items: x.items, points: x.points, pos: x.pos });
+    const list = [...r.error_list.map(x => item(x, "error")), ...r.unconnected_list.map(x => item(x, "unconnected"))];
+    if (list.length) body.append(el("ul", { class: "list-err" }, list));
     if (r.warning_list?.length) body.append(el("details", {}, el("summary", {}, `Warnings (${r.warnings})`),
-      el("ul", { class: "list-warn" }, r.warning_list.map(x => el("li", {}, `${x.description}: ${x.items.join(" ↔ ")}`)))));
+      el("ul", { class: "list-warn" }, r.warning_list.map(x => item(x, "warning")))));
     return card(v.title, body);
   },
   images(v) {
@@ -860,7 +1062,7 @@ const RENDER = {
   power(v) { return renderPower(v); },
   impedance(v) {
     const r = v.report, body = el("div");
-    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(x => el("li", {}, x))));
+    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, findings(r.warnings, "impedance", "warning")));
     for (const g of r.groups) {
       const bus = g.kind === "bus";
       const limits = [g.max_length_mm != null && `under ${g.max_length_mm} mm long`, g.max_vias != null && `at most ${g.max_vias} vias`,
@@ -886,7 +1088,7 @@ const RENDER = {
         "Not isolated: the whole board is live.")));
     if (r.barrier?.length) body.append(el("p", { class: "muted" }, "Isolation barrier: " + r.barrier.map(b => b.ref).join(", ") +
       (r.slots ? `; ${r.slots} milled slot${r.slots > 1 ? "s" : ""}` : "")));
-    if (r.problems.length) body.append(el("ul", { class: "list-err" }, r.problems.map(x => el("li", {}, x))));
+    if (r.problems.length) body.append(el("ul", { class: "list-err" }, findings(r.problems, "mains", "problem")));
     else body.append(el("p", {}, el("b", {}, "Every spacing passes.")));
     if (r.rows?.length) body.append(el("details", {}, el("summary", {}, `Closest approaches (${r.rows.length})`),
       table(["", "From", "To", "Clearance", "Creepage"], r.rows.map(x => [x.ok ? "✓" : "✗", x.a, x.b,
@@ -912,8 +1114,8 @@ const RENDER = {
   case(v) {
     const r = v.result, c = r.case;
     const body = el("div", {}, el("p", {}, `Inside ${c.L} × ${c.W} × ${c.H} mm; the board sits at (${c.ax}, ${c.ay}) mm on ${c.standoff} mm standoffs, with ${r.headroom_mm} mm above the tallest part.`));
-    if (r.problems.length) body.append(el("ul", { class: "list-err" }, r.problems.map(x => el("li", {}, x))));
-    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(x => el("li", {}, x))));
+    if (r.problems.length) body.append(el("ul", { class: "list-err" }, findings(r.problems, "case", "problem")));
+    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, findings(r.warnings, "case", "warning")));
     if (r.cutouts.length) body.append(table(["Face", "Part", "Hole", "Position (from the face's bottom-left)"], r.cutouts.map(k =>
       [k.face, k.ref, k.shape === "circle" ? `⌀${k.d} mm` : `${k.w} × ${k.h} mm`, k.shape === "circle" ? `centre ${k.u}, ${k.v} mm` : `corner ${k.u}, ${k.v} mm`])));
     body.append(el("div", { class: "files" }, v.files.map(f => el("a", { class: "btn", href: f.url, target: "_blank" }, f.label))));
@@ -930,7 +1132,8 @@ const RENDER = {
       { right: el("a", { href: v.url, download: v.name }, "⬇ " + v.name) });
   },
   import(v) {
-    const r = v.report, list = (title, xs, cls) => xs?.length ? [el("h5", {}, title), el("ul", { class: "assume " + (cls || "") }, xs.map(x => el("li", {}, x)))] : [];
+    const r = v.report, list = (title, xs, cls) => xs?.length ? [el("h5", {}, title), el("ul", { class: "assume " + (cls || "") },
+      xs.map(x => title === "Notes" ? el("li", {}, x) : finding(x, { source: "import", severity: cls ? "problem" : "warning", text: x })))] : [];
     return card(v.title, el("div", {},
       el("p", {}, `${r.counts.components} parts and ${r.counts.nets} nets from `, el("b", {}, [r.files.schematic, r.files.board].filter(Boolean).join(" and ")), "."),
       ...list("Notes", r.notes), ...list("Needs fixing", r.errors, "bad"), ...list("Warnings", r.warnings)));
@@ -944,16 +1147,17 @@ const RENDER = {
     const body = el("div", {}, el("div", { class: "stats" }, stat(r.errors.length, "errors", !r.errors.length),
       el("div", { class: "stat" }, el("div", { class: "v" }, r.warnings.length), el("div", { class: "l" }, "warnings")),
       el("div", { class: "stat" }, el("div", { class: "v" }, r.ignored), el("div", { class: "l" }, "library notes ignored"))));
-    const item = x => el("li", {}, `${x.description}`, x.items.length ? el("div", { class: "muted" }, x.items.join(" · ")) : "");
-    if (r.errors.length) body.append(el("ul", { class: "list-err" }, r.errors.map(item)));
-    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(item)));
+    const item = severity => x => finding([`${x.description}`, x.items.length ? el("div", { class: "muted" }, x.items.join(" · ")) : ""],
+      { source: "erc", severity, text: x.description, type: x.type, items: x.items });
+    if (r.errors.length) body.append(el("ul", { class: "list-err" }, r.errors.map(item("error"))));
+    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(item("warning"))));
     if (!r.errors.length && !r.warnings.length) body.append(el("p", { class: "muted" }, "No conflicting outputs, floating inputs or wiring problems."));
     return card(v.title, body);
   },
   checks(v) {
     const r = v.report, body = el("div");
-    if (r.problems.length) body.append(el("ul", { class: "list-err" }, r.problems.map(x => el("li", {}, x))));
-    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(x => el("li", {}, x))));
+    if (r.problems.length) body.append(el("ul", { class: "list-err" }, findings(r.problems, "checks", "problem")));
+    if (r.warnings.length) body.append(el("ul", { class: "list-warn" }, findings(r.warnings, "checks", "warning")));
     if (r.tracks.length) {
       const m = r.method === "ipc2221" ? ["IPC-2221", "ipc2152", "IPC-2152"] : ["IPC-2152", "ipc2221", "IPC-2221"];
       body.append(el("h5", {}, `Track current (${r.source === "simulation" ? "from the simulation" : "estimated"})`),
@@ -969,8 +1173,8 @@ const RENDER = {
   review(v) {
     const body = el("div", {}, el("p", {}, v.summary || ""));
     const probs = (v.issues || []).filter(i => i.severity === "problem"), notes = (v.issues || []).filter(i => i.severity !== "problem");
-    if (probs.length) body.append(el("ul", { class: "list-err" }, probs.map(i => el("li", {}, i.text))));
-    if (notes.length) body.append(el("h5", {}, "Notes"), el("ul", { class: "list-note" }, notes.map(i => el("li", {}, i.text))));
+    if (probs.length) body.append(el("ul", { class: "list-err" }, findings(probs.map(i => i.text), "review", "problem")));
+    if (notes.length) body.append(el("h5", {}, "Notes"), el("ul", { class: "list-note" }, findings(notes.map(i => i.text), "review", "note")));
     if (!probs.length && !notes.length) body.append(el("p", { class: "muted" }, "Nothing to report."));
     return card(v.title, body);
   },
@@ -998,8 +1202,8 @@ function renderSim(v) {
       ...sup.filter(s => s.battery_hours).slice(0, 1).map(s => stat(s.battery_hours >= 48 ? `${n3(s.battery_hours / 24)} days` : `${n3(s.battery_hours)} h`, "battery life")),
       ...(r.signals || []).slice(0, 2).map(s => stat(`${n3(s.frequency_hz)} Hz`, `${s.net}, ${Math.round(s.duty * 100)}% high`))));
   }
-  if (r.problems?.length) body.append(el("ul", { class: "list-err" }, r.problems.map(x => el("li", {}, x))));
-  if (r.warnings?.length) body.append(el("ul", { class: "list-warn" }, r.warnings.map(x => el("li", {}, x))));
+  if (r.problems?.length) body.append(el("ul", { class: "list-err" }, findings(r.problems, "sim", "problem")));
+  if (r.warnings?.length) body.append(el("ul", { class: "list-warn" }, findings(r.warnings, "sim", "warning")));
   if (r.expectations?.length) body.append(el("h5", {}, "What the design should do"),
     table(["", "Expected", "Simulated"], r.expectations.map(e => [el("span", { class: "tag " + (e.ok ? "basic" : "bad") }, e.ok ? "pass" : "fail"), e.text, e.measured])));
   const plotHost = el("div", { class: "plot-host" });
@@ -1045,7 +1249,7 @@ function renderSim(v) {
 
 function renderPower(v) {
   const b = v.budget, body = el("div");
-  if (b.notes?.length) body.append(el("ul", { class: "list-warn" }, b.notes.map(x => el("li", {}, x))));
+  if (b.notes?.length) body.append(el("ul", { class: "list-warn" }, findings(b.notes, "power", "warning")));
   const bar = pct => pct == null ? "–" : el("span", { class: "meter" + (pct > 90 ? " bad" : pct > 75 ? " warn" : "") },
     el("i", { style: `width:${Math.min(pct, 100)}%` }), el("b", {}, `${Math.round(pct)} %`));
   if (b.supplies.length) body.append(el("h5", {}, "Supplies"), table(["Input", "Typical", "Peak", "Can supply", "Used at peak"],
@@ -1516,7 +1720,7 @@ function boxThermal(t) {
       + `Vents: ${t.vents}; ${t.through_openings_pct}% of the heat leaves through openings, the rest through the ${t.material} walls.`
       + (t.with_vents_c < t.air_c - 1 ? ` Lid and side vents would bring the inside to ${c(t.with_vents_c)}.` : "")),
     t.parts.length ? table(["Part", "In the box", "Limit"], t.parts.slice(0, 4).map(x => [x.ref, c(x.temp_c), c(x.limit_c)])) : "",
-    t.warnings.length ? el("ul", { class: "list-warn" }, t.warnings.map(w => el("li", {}, w))) : "",
+    t.warnings.length ? el("ul", { class: "list-warn" }, findings(t.warnings, "heat", "warning")) : "",
     el("button", { class: "btn", type: "button", onclick: () => { S.follow = false; selectStep("sim", true); } }, "See it in the Sim Lab"));
   return box;
 }

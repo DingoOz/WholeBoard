@@ -80,7 +80,8 @@ def drc(pcb: Path, refill: bool = True, save: bool = True) -> dict:
         return {"type": v.get("type"), "severity": v.get("severity"),
                 "description": v.get("description"),
                 "items": [i.get("description") for i in v.get("items", [])][:3],
-                "pos": (v.get("items") or [{}])[0].get("pos")}
+                "pos": (v.get("items") or [{}])[0].get("pos"),
+                "points": [i["pos"] for i in v.get("items", [])[:3] if i.get("pos")]}
 
     return {
         "errors": len(errors), "warnings": len(warnings), "unconnected": len(unconnected),

@@ -50,7 +50,7 @@ class BoardView {
     }
     const fit = document.createElement("button");
     fit.type = "button"; fit.className = "chip"; fit.textContent = "Fit";
-    fit.onclick = () => this.fit();
+    fit.onclick = () => this.fit(true);
     this.bar.append(fit);
   }
 
@@ -73,15 +73,24 @@ class BoardView {
     return [0, 0, 100, 100];
   }
 
-  fit() {
+  // the whole board, or the marked points when there are any (unless all)
+  fit(all = false) {
     if (!this.w) this._resize();
-    const [x0, y0, x1, y1] = this.bounds();
+    const [x0, y0, x1, y1] = this.opts.marks?.length && !all ? this.markBounds() : this.bounds();
     const pad = 6, bar = this.opts.compact ? 0 : 36;     // a compact view has no layer bar to leave room for
     const s = Math.min((this.w - (bar ? 40 : 16)) / (x1 - x0 + pad * 2), (this.h - (bar ? 80 : 16)) / (y1 - y0 + pad * 2));
     this.scale = Math.max(0.5, s);
     this.ox = this.w / 2 - ((x0 + x1) / 2) * this.scale;
     this.oy = (this.h - bar) / 2 - ((y0 + y1) / 2) * this.scale;
     this.draw();
+  }
+
+  // frame the marked points with a few millimetres of board around them
+  markBounds() {
+    const xs = this.opts.marks.map(m => m.x), ys = this.opts.marks.map(m => m.y);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const half = Math.max(4, (Math.max(...xs) - Math.min(...xs)) / 2 + 2, (Math.max(...ys) - Math.min(...ys)) / 2 + 2);
+    return [cx - half, cy - half, cx + half, cy + half];
   }
 
   // stop following resizes, theme and zoom changes, for a view that is being replaced
@@ -225,6 +234,17 @@ class BoardView {
       for (const f of g.footprints) {
         if (!f.court) continue;
         c.fillText(f.ref, (f.court[0] + f.court[2]) / 2, (f.court[1] + f.court[3]) / 2);
+      }
+    }
+    if (this.opts.marks?.length) {
+      // the points a finding is about: a ring and crosshair that keep their size on screen
+      const r = 10 / this.scale;
+      c.strokeStyle = this.opts.markColor || "#ff3b8d"; c.lineWidth = 2 / this.scale;
+      for (const m of this.opts.marks) {
+        c.beginPath(); c.arc(m.x, m.y, r, 0, 7);
+        c.moveTo(m.x - r * 1.6, m.y); c.lineTo(m.x - r * 0.5, m.y); c.moveTo(m.x + r * 0.5, m.y); c.lineTo(m.x + r * 1.6, m.y);
+        c.moveTo(m.x, m.y - r * 1.6); c.lineTo(m.x, m.y - r * 0.5); c.moveTo(m.x, m.y + r * 0.5); c.lineTo(m.x, m.y + r * 1.6);
+        c.stroke();
       }
     }
   }

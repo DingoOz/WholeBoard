@@ -382,6 +382,16 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
   </form>
 </dialog>
 
+<dialog id="findingDialog" class="modal wide" aria-labelledby="findingTitle">
+  <form method="dialog">
+    <div id="findingBody" class="finding-body"></div>
+    <div class="modal-actions">
+      <button class="btn" type="button" id="findingAsk">Ask the designer about this</button>
+      <button class="btn primary" value="cancel" type="submit">Close</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="keysDialog" class="modal small" aria-labelledby="keysTitle">
   <form method="dialog">
     <h2 id="keysTitle">Keyboard shortcuts</h2>
