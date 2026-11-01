@@ -74,3 +74,18 @@ def test_freecad_build(tmp_path):
         assert Path(s["files"][k]).stat().st_size > 1000
     preview = json.loads(Path(s["preview"]).read_text())
     assert {m["group"] for m in preview["meshes"]} == {"base", "lid", "board"}
+
+
+@pytest.mark.skipif(enclosure.find_freecad() is None, reason="FreeCAD is not installed")
+def test_the_lid_label_keeps_clear_of_the_led_window(tmp_path):
+    """Centred, BLINKER would run over D1's window 5 mm right of the centre: it moves to the nearest clear spot,
+    and the notes say why. Set where it is already clear, it stays put."""
+    ctx = enclosure.context(_geo(), SPEC)
+    enc = {**enclosure.suggest(ctx), "lid_holes": [{"ref": "D1", "diameter_mm": 3}],
+           "label": {"text": "BLINKER", "size_mm": 6}}
+    s = enclosure.build(_geo(), SPEC, enc, tmp_path / "a", "t", log=lambda m: None)
+    assert s["ok"] and s["label"]["moved_mm"] > 1 and s["label"]["size"] == 6
+    assert any("the lid hole for D1" in n and "moved" in n for n in s["freecad_notes"])
+    clear = {**enc, "label": {"text": "HI", "size_mm": 4, "x_mm": 10, "y_mm": 8}}
+    s = enclosure.build(_geo(), SPEC, clear, tmp_path / "b", "t", log=lambda m: None)
+    assert s["label"]["moved_mm"] == 0 and not any("label" in n for n in s["freecad_notes"])

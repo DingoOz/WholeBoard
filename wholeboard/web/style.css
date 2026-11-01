@@ -101,6 +101,7 @@ main { flex: 1; min-width: 0; display: flex; }
 .msg.system { align-self: center; font-size: 12px; color: var(--muted); background: transparent; text-align: center; }
 .msg.tool { align-self: flex-start; font-size: 12px; color: var(--muted); padding: 2px 4px; }
 .msg.tool::before { content: "⚙ "; }
+.stamp { align-self: center; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 4px; }
 .question { border: 1px solid var(--accent-2); background: color-mix(in srgb, var(--accent-2) 10%, var(--panel)); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .question .q { font-weight: 600; white-space: pre-wrap; }
 .question .opts { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -158,6 +159,12 @@ table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.sortable th { padding: 0; }
+.th-sort { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 4px; width: 100%; padding: inherit; cursor: pointer; font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; }
+table.sortable th .th-sort { padding: 6px 8px; }
+.th-sort:hover { color: var(--text); }
+.th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+.th-arrow { font-size: 9px; }
 .tag { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--line); }
 .tag.basic { color: var(--ok); border-color: var(--ok); } .tag.preferred { color: var(--info); border-color: var(--info); }
 .tag.extended { color: var(--warn); border-color: var(--warn); } .tag.bad { color: var(--danger); border-color: var(--danger); }
@@ -166,6 +173,18 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .list-err li { color: var(--danger); } .list-warn li { color: var(--warn); }
 .list-note li::marker { color: var(--muted); }
 ul.list-err, ul.list-warn, ul.list-note { margin: 6px 0; padding-left: 20px; }
+li.finding { cursor: pointer; border-radius: 4px; }
+li.finding:hover, li.finding:focus-visible { text-decoration: underline dotted; text-underline-offset: 3px; }
+li.finding:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.finding-body h2 { margin: 4px 0 0; font-size: 17px; line-height: 1.35; overflow-wrap: anywhere; }
+.finding-body h5 { margin: 14px 0 4px; }
+.finding-body p { margin: 0; line-height: 1.5; }
+.finding-body p.muted { margin-top: 8px; }
+.finding-body ul { margin: 0; padding-left: 20px; }
+.finding-kind { display: flex; gap: 8px; align-items: center; }
+.finding-kind code { font-size: 11px; color: var(--muted); }
+.finding-board { position: relative; height: clamp(260px, 42vh, 460px); border-radius: 10px; overflow: hidden; }
+.finding-board .boardview { border-radius: 10px; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .gallery figure { margin: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: #fff; }
 .gallery img { width: 100%; display: block; }

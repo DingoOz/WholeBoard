@@ -164,6 +164,29 @@ def _flip_at(node: list, angle) -> None:
         at.insert(3, fmt(new))
 
 
+def _place_zone(zone: list, x: float, y: float, rot: float, bottom: bool) -> None:
+    """Move a footprint's own zone (an antenna keep-out, say) from footprint to board coordinates.
+
+    In a .kicad_mod a zone's points are relative to the footprint, but in a .kicad_pcb they are board coordinates,
+    unlike the footprint's pads and graphics. Flipped first (y negated, layers swapped), then turned and moved."""
+    a = math.radians(rot)
+    cos, sin = math.cos(a), math.sin(a)
+
+    def walk(node: list) -> None:
+        for c in node:
+            t = tag(c)
+            if t == "xy" and len(c) >= 3:
+                lx, ly = num(c[1]), -num(c[2]) if bottom else num(c[2])
+                c[1], c[2] = fmt(x + lx * cos + ly * sin), fmt(y - lx * sin + ly * cos)
+            elif t in ("polygon", "filled_polygon", "pts"):
+                walk(c)
+            elif t in ("layer", "layers") and bottom:
+                for i in range(1, len(c)):
+                    if isinstance(c[i], str):
+                        c[i] = _flip_layer(c[i])
+    walk(zone)
+
+
 def _flip_child(child: list) -> None:
     """Put one footprint item on the bottom side: KiCad's top-bottom flip about the footprint origin.
 
@@ -244,7 +267,9 @@ def footprint_instance(fp: libs.Footprint, ref: str, value: str, x: float, y: fl
         for n in sexpr.walk(child):
             if tag(n) == "uuid" and len(n) > 1:
                 n[1] = uid()
-        if bottom:
+        if t == "zone":
+            _place_zone(child, x, y, rot, bottom)
+        elif bottom:
             _flip_child(child)
         if t == "property" and len(child) > 2:
             have_props.add(child[1])

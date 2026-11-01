@@ -208,12 +208,25 @@ def parse_value(text: str) -> float | None:
     return float(m.group(1)) * (_SI[m.group(2)] if m.group(2) else 1.0)
 
 
-def find_passive(kind: str, value: str, package: str = "0603", limit: int = 5) -> list[dict]:
+_VOLTS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(k?)V\b", re.I)
+
+
+def _rated_volts(text: str) -> float | None:
+    """A voltage like '50V' or '2kV' in a value or description, in volts."""
+    m = _VOLTS_RE.search(text or "")
+    return float(m.group(1)) * (1000 if m.group(2) else 1) if m else None
+
+
+def find_passive(kind: str, value: str, package: str = "0603", limit: int = 5, volts: float | None = None) -> list[dict]:
     """In-stock resistors, capacitors or LEDs by value (or LED colour) and package.
 
+    volts: the lowest voltage rating to accept, which can also be written into the value ('100nF 100V', '1nF 2kV').
     Candidates come from the jlcsearch mirror's category filters; stock and price are then
     confirmed live at JLCPCB."""
     kind = kind.lower().rstrip("s")
+    if _rated_volts(value) is not None:
+        volts = max(volts or 0, _rated_volts(value))
+        value = _VOLTS_RE.sub("", value).strip()
     if kind == "led":
         url = f"{JLCSEARCH}/leds/list.json?package={urllib.parse.quote(package)}&color={urllib.parse.quote(value.lower())}"
         key = "leds"
@@ -226,12 +239,14 @@ def find_passive(kind: str, value: str, package: str = "0603", limit: int = 5) -
         key = f"{kind}s"
     else:
         raise ValueError("kind must be resistor, capacitor or led")
-    cache_key = f"fp:{url}:{limit}"
+    cache_key = f"fp:{url}:{limit}:{volts or ''}"
     hit = _cached(cache_key)
     if hit is not None:
         return hit
     data = _get_json(url)
     cands = data.get(key) or []
+    if volts:
+        cands = [i for i in cands if (i.get("voltage_rating") or _rated_volts(i.get("description")) or 0) >= volts]
     cands.sort(key=lambda i: (not i.get("is_basic"), not i.get("is_preferred")))
     codes = [f"C{i['lcsc']}" for i in cands[:14]]
     from concurrent.futures import ThreadPoolExecutor

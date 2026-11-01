@@ -154,6 +154,9 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
           <label>Price per million input tokens (US$) <input name="ai.openai_price_in" type="number" min="0" step="0.01" placeholder="0 for local models"></label>
           <label>Price per million output tokens (US$) <input name="ai.openai_price_out" type="number" min="0" step="0.01"></label>
         </div>
+        <label>Context window (tokens) <input name="ai.openai_context" type="number" min="0" step="1024" placeholder="0 asks the server"></label>
+        <p class="hint">When a conversation nears this, WholeBoard shortens its older steps so the model can carry on.
+          Leave it at 0 to use what the server reports (llama.cpp, Strata, vLLM and LM Studio do).</p>
         <datalist id="openaiModels"></datalist>
         <p class="hint">The model must support tool calling. Larger models design better boards.</p>
       </div>
@@ -378,6 +381,16 @@ window.wbZoom = () => parseFloat(document.documentElement.style.zoom) || 1;</scr
     <div class="modal-actions">
       <button class="btn ghost" value="cancel" type="submit">Cancel</button>
       <button class="btn primary" value="ok" type="submit" id="askOk">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="findingDialog" class="modal wide" aria-labelledby="findingTitle">
+  <form method="dialog">
+    <div id="findingBody" class="finding-body"></div>
+    <div class="modal-actions">
+      <button class="btn" type="button" id="findingAsk">Ask the designer about this</button>
+      <button class="btn primary" value="cancel" type="submit">Close</button>
     </div>
   </form>
 </dialog>

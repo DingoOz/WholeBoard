@@ -14,6 +14,9 @@ courtyard was x 13.9..25.0, the placer thought 18.96..30.1.
 Fix: rotate the four courtyard corners by the placement angle (as the board builder does) and take the
 bounding box.
 
+**Fixed 2026-10-31** (uncommitted): the test-pad placer and `_fixed_boxes` both use `design._placed_courtyard`, which
+turns the four corners by the placement angle (and flips them for the bottom side), as `_check_fixed` does.
+
 ## 2. Simulator's LED-drive guess treats GND and supply rails as LED nets
 
 `wholeboard/sim.py`, the loop that fills `led_pins` (around line 780): an LED's anode or cathode net
@@ -26,6 +29,8 @@ status LED's cathode is GND and the port LEDs' anodes are +3V3.
 
 Fix: skip rail and ground nets (`self.is_power(net)` or `net == self.ground`) when building `led_pins`.
 
+**Fixed 2026-10-31** (uncommitted): `_auto_drive` skips an LED's anode or cathode net when it is a rail or ground.
+
 ## 3. TPS563201 block has no `sim.vref`, so its output is simulated at 3.46 V, not 3.3 V
 
 `wholeboard/blocks.py`, `buck_tps563201_*`: U1 has no `"sim": {"vref": 0.768}`. The simulator falls back to
@@ -35,6 +40,8 @@ Seen: `U2: feedback reference assumed 0.8 V (set sim.vref)` /
 `switching regulator simulated as an ideal 3.46 V supply`.
 
 Fix: add `"sim": {"vref": 0.768}` to the block's U1.
+
+**Fixed 2026-10-31** (uncommitted): both variants' U1 have `"sim": {"vref": 0.768}`.
 
 ## 4. A regulator the simulator can't recognise leaves its rail floating at nonsense voltages
 
@@ -49,6 +56,12 @@ and skip rating checks on that rail; (b) let `sim` name the pins for parts witho
 `"sim": {"pins_map": {"VIN": "2", "FB": "5", "GND": "1", "EN": "3"}}`), or accept `sim.vout` plus a `sim.in` and
 `sim.out` net.
 
+**Fixed 2026-10-31** (uncommitted), both ideas: (b) `sim.pins_map` names a part's pins for the converter and LDO
+models (`{"VIN": "2", "FB": "5", "GND": "1", "EN": "3"}`), and the "left out" note says so; (a) when a regulator is
+still left out, `Netlist.floating_rails` finds the power nets near it (through its inductor or feedback divider) that
+nothing else feeds. The simulation then reports `+12V has no source in the simulation: U1 could not be modelled ...`
+once, and skips the rail's voltage and every rating check on parts touching it.
+
 ## 5. Placement timeout is reported as "did not finish (exit code -9)"
 
 `wholeboard/router.py`, `place`: when the routable placement pass overruns its limit (`place_time_s × 3 + 120`
@@ -56,6 +69,9 @@ s), `_stream` kills it. The log then says `Routability-checked placement did not
 reads like a crash or out-of-memory, not a timeout (this machine has 184 GB free).
 
 Fix: report "timed out after N s" when the kill came from the timer.
+
+**Fixed 2026-10-31** (uncommitted): `_stream` returns `TIMED_OUT` when its timer killed the tool, and the log says
+`did not finish (timed out after 300 s)`; route and place errors say the same.
 
 ## 6. TraceMaker: shortest-first variants stall after about 50 connections on a large board
 
@@ -75,6 +91,10 @@ though the server listens on 0.0.0.0:8770. (The router live view is fine: the we
 Fix: when WholeBoard is in LAN mode, hand out the LAN address (or a configurable public base URL) alongside the
 local one.
 
+**Fixed 2026-10-31** (uncommitted): when WholeBoard listens on 0.0.0.0, `POST /api/projects` and
+`GET /api/projects/<id>` also return `lan_urls` (one per LAN address), and `new_board` / `open_board` pass them on with a
+note to give those to a user on another machine. The address finder moved to `auth.lan_addresses`.
+
 ## 8. Routing failure costs a second full routing run
 
 `wholeboard/pipeline.py`: when the first route is incomplete it runs an ECO placement and routes again with the
@@ -87,10 +107,19 @@ connections, 0 legal moves` and `0 footprints moved`, but the retry still remove
 vias and started another full 7200 s route of the same placement. When the ECO moves nothing, the retry could keep
 the routed board and only rip up the area round the 10 failures (or be skipped).
 
+**Partly fixed 2026-10-31** (uncommitted): the retry is skipped when the ECO pass moved no footprint (the same placement
+routes the same way), and the log says up front how long the retry may take. Also fixed: when the retry routed fewer
+connections, the first result was kept but its board had been overwritten by the retry's; the first board is now
+restored. Still open: a retry that keeps the routed board and rips up only round the failures (TraceMaker, see 18).
+
 ## 9. (Feature gap) `find_passive` can't filter by voltage rating
 
 `find_passive` rejects values like `100nF 100V` or `1nF 2kV`. PoE and 54 V designs need voltage-rated
 ceramics, so they fall back to `search_parts` keyword searches. A `volts` (minimum rating) argument would help.
+
+**Fixed 2026-10-31** (uncommitted): `find_passive` takes `volts` (the lowest rating to accept), and reads one written
+into the value (`100nF 100V`, `1nF 2kV`). jlcsearch ignores a voltage filter, so its candidates are filtered on their
+`voltage_rating` (or the description).
 
 ## 10. Custom rules in the `.kicad_dru` turn off TraceMaker's GPU fields and per-class cache
 
@@ -158,6 +187,8 @@ escapes, diff-pair geometry) disagreeing with the rule engine. Open.
 prints nothing for the whole run, so `POST /api/projects/<id>/cancel` returned ok and the router kept going (seen
 2026-10-27: still running 2+ minutes after cancel; stopped with `kill`). Fix: poll the event on a timer (or a
 thread waiting on it) and kill the process from there, as the timeout timer already does.
+
+**Fixed 2026-10-29** (commit c8103e0): a watcher thread kills the process within half a second of the cancel.
 
 ## 15. TraceMaker's per-class caches have no memory bound; WholeBoard made one class per impedance pair
 
@@ -227,6 +258,11 @@ Fix ideas: have `check_design` measure the gaps between a footprint's pads on di
 below `rules.clearance_mm` (naming the parts and the largest clearance that fits), or write a `.kicad_dru` rule that
 allows those footprints' own pad gaps (check it does not slow TraceMaker, see 13).
 
+**Fixed 2026-10-31** (uncommitted), the first idea: `check_design` (`design._check_pad_gaps`) measures the gaps between
+a footprint's pads on different nets (rounded corners and rotations included) and reports an error naming the parts,
+the pads, the gap and the largest clearance that fits. Checked against KiCad's DRC: the NexFET's pads 3 and 4 at
+0.140 mm under 0.15 mm in both, and no false alarm on the LAN8720A's VQFN-24 at 0.2 mm.
+
 ## 20. A plane connection stranded in a sliver of the plane passes routing and fails DRC
 
 On the 5-port switch's rev10, U20 pad 17 (+54V) reached the In2.Cu +54V plane through a via at (117.75, 181.3). There
@@ -237,6 +273,10 @@ done, and went on to DRC instead of the ECO retry.
 Fix ideas: WholeBoard's route step should count `unconnected_after_refill` as unrouted (warn, and run the ECO retry);
 TraceMaker should count a plane connection as made only if its via lands in the plane's main body, or route on to one
 that does.
+
+**WholeBoard side fixed 2026-10-31** (uncommitted): `router.route` counts `unconnected_after_refill` as open
+(`refill_open`), so the route step runs the ECO retry. If every connection is routed but some are still cut off after
+the retry, the step warns and goes on to KiCad's DRC, which refills and decides. TraceMaker side open.
 
 ## 21. Most of the switch-chip-side MDI pairs routed as two single traces
 
@@ -279,3 +319,30 @@ it. A regulator's output current still applies where it is larger. Two-pin parts
 `firmware.detect` matched the family patterns against every part's description too, so D23 ("Switch reset from the
 ESP32") came first and firmware was generated for D23 (pins "not a GPIO").
 **Fixed 2026-10-29** (uncommitted): descriptions count only on chip-like references (U, IC, M, MOD).
+
+## 26. A footprint's antenna keep-out stays at the board origin, so nothing enforces it
+
+`wholeboard/kicad/board.py`, `footprint_instance`: a footprint's own `zone` is copied as is, while `pad` and
+`property` children are rotated and placed relative to the footprint. In a `.kicad_pcb`, a footprint's zone polygon
+is in board coordinates, so the keep-out stays at the library's local coordinates however the part is placed. The
+router, the pour and KiCad's DRC all see it off the board, and copper is allowed under the antenna with no warning.
+The block notes saying "the footprint keeps copper out from under it" (`blocks.py`) are therefore not true.
+
+Seen: Lunchbox Logger (board 20261031-010553-b035) rev4, a clean build with 0 DRC errors. U5
+(`RF_Module:ESP32-C3-WROOM-02`) is at (122.25, 118.4), but its keep-out is still `(-14 -7.1) (14 -7.1) (14 -18.1)
+(-14 -18.1)` where it should cover x 108.25..136.25, y 100.3..111.3. Inside that area are ESPC_EN and ESPC_BOOT on
+F.Cu and ground pour (a sampled box over the antenna, x 13..32, y 0..12 from the board corner, is 85 % covered on F.Cu
+and 96 % on B.Cu). Wi-Fi range would suffer. The latest revisions of 20261021-112503-b521 and 20261021-113012-6703 have
+the same untransformed zone. Any footprint with its own zone is likely affected.
+
+Fix: transform a footprint's zone polygons (rotate, flip for the bottom side, translate) to board coordinates in
+`footprint_instance`, and again wherever a later step moves the footprint. Check the placer and router then honour the
+keep-out, and add a test that a placed module's keep-out covers its antenna and that copper there fails DRC. Boards
+already built need rebuilding.
+Workaround: leave the antenna off the board. Lunchbox Logger rev5 cuts a notch in `board.outline` under it.
+
+**Fixed 2026-10-31** (uncommitted): `footprint_instance` moves a footprint's zones to board coordinates
+(`_place_zone`: flipped for the bottom, turned, moved). TraceMaker's placer keeps footprints that own a keep-out fixed,
+so no later step moves them. Checked with KiCad: Lunchbox Logger rev4 with the moved keep-out fails DRC with six
+`items_not_allowed` (the ESPC_EN and ESPC_BOOT tracks under the antenna). `tests/test_more.py` covers 0, 90 and 180
+degrees and the bottom side. Boards built before this keep the wrong keep-out until rebuilt.

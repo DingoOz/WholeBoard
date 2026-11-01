@@ -191,7 +191,9 @@ TOOLS = [
     _tool("find_passive", "Find in-stock JLCPCB resistors, capacitors or LEDs by value and package, "
           "basic parts first. value: '10k', '4k7', '100nF', '22uF', or an LED colour such as 'green'.",
           {"kind": {"type": "string", "enum": ["resistor", "capacitor", "led"]},
-           "value": {"type": "string"}, "package": {"type": "string", "description": "0402, 0603, 0805, 1206"}},
+           "value": {"type": "string"}, "package": {"type": "string", "description": "0402, 0603, 0805, 1206"},
+           "volts": {"type": "number", "description": "Lowest voltage rating to accept, for capacitors on high "
+                     "voltage rails (e.g. 100 for 54 V PoE, 2000 for a 1nF 2kV Bob Smith cap)."}},
           ["kind", "value"]),
     _tool("search_footprints", "Search KiCad's footprint libraries. Words must all appear in the "
           "'Library:Name' id, e.g. 'R_0603', 'SOT-23-5', 'USB_C Receptacle 16P', 'LQFP-48 7x7', "
@@ -344,8 +346,18 @@ class Agent:
         ai = config.load()["ai"]
         tools = TOOLS if expert.settings(ai) else [t for t in TOOLS if t["name"] != "consult_expert"]
         sess = make_session(ai, SYSTEM, tools)
+        sess.recall = self._recall
         self.p.state["ai_label"] = sess.label
         return sess
+
+    def _recall(self) -> str:
+        """What a session whose older steps were shortened needs to carry on: the current spec."""
+        spec = self.p.state.get("spec")
+        if not spec:
+            return ""
+        return (f"(WholeBoard: older steps were shortened to fit your context. The current design spec, revision "
+                f"{self.p.state.get('revision')}, is below; carry on from where you were.)\n```json\n"
+                f"{json.dumps(spec)}\n```")
 
     def _run(self, user_text: str) -> None:
         p = self.p
@@ -381,6 +393,8 @@ class Agent:
             self._count(turn.usage)
             if turn.note:
                 p.log("agent", turn.note)
+            if turn.notice:
+                p.chat("system", turn.notice)
             if turn.text:
                 p.chat("assistant", turn.text)
             if turn.stop == "refusal":
@@ -499,9 +513,12 @@ class Agent:
             if p.state["steps"]["parts"]["status"] == "pending":
                 self._brief_done()
                 p.step("parts", "running", "Choosing parts")
-            res = jparts.find_passive(str(args["kind"]), str(args["value"]), str(args.get("package") or "0603"))
+            volts = float(args["volts"]) if args.get("volts") else None
+            res = jparts.find_passive(str(args["kind"]), str(args["value"]), str(args.get("package") or "0603"),
+                                      volts=volts)
             p.emit({"type": "tool", "name": name,
-                    "text": f"Looked for {args['value']} {args['kind']} ({args.get('package') or '0603'}): {len(res)} in stock"})
+                    "text": f"Looked for {args['value']}{f' {volts:g} V' if volts else ''} {args['kind']} "
+                            f"({args.get('package') or '0603'}): {len(res)} in stock"})
             return json.dumps([{k: r[k] for k in ("lcsc", "mpn", "package", "description", "stock", "library_type")}
                                | {"unit_price": jparts.unit_price(r, 10)} for r in res]) or "[]"
         if name == "search_footprints":

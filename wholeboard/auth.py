@@ -11,6 +11,7 @@ import hmac
 import html
 import json
 import secrets
+import socket
 import threading
 import time
 from urllib.parse import parse_qs
@@ -93,6 +94,24 @@ def allow_attempt(ip: str) -> bool:
 def is_local(scope: dict) -> bool:
     client = scope.get("client") or ("", 0)
     return client[0] in LOOPBACK or client[0].startswith("127.")
+
+
+def lan_addresses() -> list[str]:
+    """This computer's addresses on the LAN, for links that work from other machines."""
+    found = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # no packet is sent; this just picks the outgoing interface
+            found.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if not ip.startswith("127.") and ip not in found:
+                found.append(ip)
+    except OSError:
+        pass
+    return found
 
 
 def _cookie(scope: dict) -> str | None:

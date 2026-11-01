@@ -114,11 +114,7 @@ def _fixed_boxes(spec: dict) -> list[tuple]:
         if "x_mm" not in pl:
             continue
         fp = libs.load_footprint(c.get("footprint") or "")
-        x0, y0, x1, y1 = fp.courtyard if fp else (-2, -2, 2, 2)
-        if round(float(pl.get("rotation") or 0)) % 180 == 90:
-            x0, y0, x1, y1 = y0, x0, y1, x1
-        x, y = float(pl["x_mm"]), float(pl["y_mm"])
-        boxes.append((x + x0, y + y0, x + x1, y + y1))
+        boxes.append(_placed_courtyard(c, fp.courtyard if fp else (-2, -2, 2, 2)))
     return boxes
 
 
@@ -202,11 +198,7 @@ def _place_test_points(spec: dict) -> None:
         if "x_mm" not in pl or c.get("test_point_for"):
             continue
         fp = libs.load_footprint(c.get("footprint") or "")
-        x0, y0, x1, y1 = fp.courtyard if fp else (-2, -2, 2, 2)
-        if round(float(pl.get("rotation") or 0)) % 180 == 90:
-            x0, y0, x1, y1 = y0, x0, y1, x1
-        x, y = float(pl["x_mm"]), float(pl["y_mm"])
-        boxes.append((x + x0, y + y0, x + x1, y + y1))
+        boxes.append(_placed_courtyard(c, fp.courtyard if fp else (-2, -2, 2, 2)))
     taken = [(float(c["placement"]["x_mm"]), float(c["placement"]["y_mm"])) for c in spec["components"]
              if c.get("test_point_for") and "x_mm" in (c.get("placement") or {})]
     inset = 2.0                                   # pad centre from the board edge
@@ -333,6 +325,7 @@ def validate(spec: dict) -> Report:
                                 f"(list them in no_connect if that is intended)")
 
     _check_fixed(spec, fps, rep, w, h)
+    _check_pad_gaps(spec, fps, used, rep)
     ie, iw = impedance.validate(spec)
     rep.errors += ie
     rep.warnings += iw
@@ -409,6 +402,77 @@ def _box(points: list[tuple[float, float]]) -> tuple[float, float, float, float]
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def _pad_outline(p: libs.Pad) -> list[tuple[float, float]]:
+    """A pad's copper as a convex polygon in footprint coordinates, its rounded corners as arcs of 7 points."""
+    w, h = p.w / 2, p.h / 2
+    r = min(w, h) * (1.0 if p.shape in ("circle", "oval") else 2 * p.rratio if p.shape == "roundrect" else 0.0)
+    pts = []
+    for qx, qy, a0 in ((1, 1, 0), (-1, 1, 90), (-1, -1, 180), (1, -1, 270)):    # each corner's arc centre
+        cx, cy = qx * (w - r), qy * (h - r)
+        for k in range(7 if r else 1):
+            a = math.radians(a0 + 15 * k)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return [(p.x + px, p.y + py) for px, py in (_rot(x, y, p.angle) for x, y in pts)]
+
+
+def _seg_dist(p, a, b) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / ((dx * dx + dy * dy) or 1)))
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+
+def _poly_gap(a: list, b: list) -> float:
+    """The gap between two convex polygons that do not overlap."""
+    return min(min(_seg_dist(p, q[i], q[i - 1]) for p in s for i in range(len(q))) for s, q in ((a, b), (b, a)))
+
+
+def _check_pad_gaps(spec: dict, fps: dict, used: dict, rep: Report) -> None:
+    """Pads of one footprint on different nets that sit closer than the board's clearance: KiCad's DRC flags
+    them, but only after routing. Said once per footprint and pad pair, naming every part that has it."""
+    clear = float(spec["rules"].get("clearance_mm", 0.2))
+    found: dict[tuple, list] = {}
+    for c in spec["components"]:
+        ref, fp = c.get("ref"), fps.get(c.get("ref"))
+        if not fp or len(fp.pads) < 2:
+            continue
+        pads = [(p, used.get(f"{ref}.{p.name}"), _pad_outline(p)) for p in fp.pads
+                if p.kind != "np_thru_hole" and any(lay.endswith(".Cu") for lay in p.layers)]
+        boxes = [_box(o) for _, _, o in pads]
+        for i, (pa, na, oa) in enumerate(pads):
+            for j in range(i + 1, len(pads)):
+                pb, nb, ob = pads[j]
+                if na == nb or not (na or nb) or pa.name == pb.name:
+                    continue
+                if not ({*pa.layers} & {*pb.layers} or "*.Cu" in pa.layers + pb.layers):
+                    continue
+                ba, bb = boxes[i], boxes[j]
+                if ba[0] - clear > bb[2] or bb[0] - clear > ba[2] or ba[1] - clear > bb[3] or bb[1] - clear > ba[3]:
+                    continue
+                gap = _poly_gap(oa, ob)
+                if gap < clear - 1e-6:
+                    key = (fp.lib_id, *sorted((pa.name, pb.name)))
+                    gaps = found.setdefault(key, [gap, []])
+                    gaps[0] = min(gaps[0], gap)
+                    if ref not in gaps[1]:
+                        gaps[1].append(ref)
+    for (lib, a, b), (gap, refs) in found.items():
+        rep.errors.append(f"{', '.join(refs)} ({lib}): pads {a} and {b} are on different nets but only {gap:.3f} mm "
+                          f"apart, under the board's {clear:g} mm clearance, so KiCad's DRC fails them after routing. "
+                          f"Set rules.clearance_mm to {math.floor(gap * 1000 + 1e-6) / 1000:g} or less (JLCPCB's minimum is "
+                          f"0.09 mm), use another footprint, or put the two pads on one net.")
+
+
+def _placed_courtyard(c: dict, courtyard) -> tuple[float, float, float, float]:
+    """A placed part's courtyard on the board: its four corners turned by the placement angle, then boxed."""
+    pl = c["placement"]
+    x, y, r = float(pl["x_mm"]), float(pl["y_mm"]), float(pl.get("rotation") or 0)
+    cx0, cy0, cx1, cy1 = courtyard
+    if on_bottom(c):                     # flipped: the footprint's y is mirrored before it is turned
+        cy0, cy1 = -cy1, -cy0
+    return _box([(x + px, y + py) for px, py in (_rot(cx0, cy0, r), _rot(cx1, cy0, r),
+                                                 _rot(cx1, cy1, r), _rot(cx0, cy1, r))])
+
+
 def on_bottom(c: dict) -> bool:
     """True for a part the spec puts on the bottom side of the board."""
     return str((c.get("placement") or {}).get("side") or "top").lower() in ("bottom", "back", "b.cu")
@@ -430,12 +494,8 @@ def _check_fixed(spec: dict, fps: dict, rep: Report, w: float, h: float) -> None
         if fp is None or pl.get("x_mm") is None or pl.get("y_mm") is None:
             continue
         x, y, r = float(pl["x_mm"]), float(pl["y_mm"]), float(pl.get("rotation") or 0)
-        cx0, cy0, cx1, cy1 = fp.courtyard
         bottom = on_bottom(c)
-        if bottom:                       # flipped: the footprint's y is mirrored before it is turned
-            cy0, cy1 = -cy1, -cy0
-        court = _box([(x + px, y + py) for px, py in (_rot(cx0, cy0, r), _rot(cx1, cy0, r),
-                                                       _rot(cx1, cy1, r), _rot(cx0, cy1, r))])
+        court = _placed_courtyard(c, fp.courtyard)
         pads = []
         for p in fp.pads:
             if p.kind == "np_thru_hole":

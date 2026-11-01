@@ -141,3 +141,42 @@ def test_an_ic_current_runs_in_its_supply_nets_only(tmp_path):
     i = r["net_current_ma"]
     assert (i.get("SIG") or 0) < 1                         # not the chip's 100 mA
     assert i["+1V8"] >= 50 and i["+3V3"] >= 50              # each supply carries its share
+
+
+@needs_spice
+def test_an_led_on_a_rail_does_not_make_pull_ups_drive_pins(tmp_path):
+    """Only a resistor to the LED's own net says a pin lights it; a pull-up to the rail the LED's anode is on does not."""
+    comps = [comp("U1", "ESP32-C3-MINI-1", "RF_Module:ESP32-C3-MINI-1"),
+             comp("D1", "red", "LED_SMD:LED_0603_1608Metric", "Device:LED"),
+             comp("R1", "1k", "Resistor_SMD:R_0603_1608Metric"), comp("R2", "10k", "Resistor_SMD:R_0603_1608Metric")]
+    nets = [{"name": "+3V3", "class": "power", "pins": ["U1.3", "D1.2", "R2.1"]},
+            {"name": "GND", "class": "power", "pins": ["U1.1"]},
+            {"name": "LED_K", "pins": ["D1.1", "R1.1"]}, {"name": "LED_IO", "pins": ["R1.2", "U1.10"]},
+            {"name": "EN", "pins": ["R2.2", "U1.11"]}]
+    r = sim.simulate(spec(comps, nets, {"sources": [{"net": "+3V3", "volts": 3.3}]}), tmp_path, engine=engine)
+    driven = [a for a in r["assumptions"] if "to light its LED" in a]
+    assert any(a.startswith("U1 pin 10") and "driven low" in a for a in driven), r["assumptions"]
+    assert not any(a.startswith("U1 pin 11") for a in driven)
+
+
+@needs_spice
+def test_a_regulator_it_cannot_model_leaves_one_clear_problem(tmp_path):
+    """A buck with no symbol: its rail has no source, said once, not as every part on the rail overstressed;
+    sim.pins_map names its pins so it can be modelled."""
+    def run(u1sim):
+        comps = [comp("U1", "LM5164", description="100V 1A synchronous buck converter", sim=u1sim),
+                 comp("L1", "47uH", "Inductor_SMD:L_1210_3225Metric"),
+                 comp("R1", "100k", "Resistor_SMD:R_0603_1608Metric"), comp("R2", "11k", "Resistor_SMD:R_0603_1608Metric"),
+                 comp("C13", "10uF", "Capacitor_SMD:C_1206_3216Metric", description="10uF 50V X7R"),
+                 comp("R6", "1k", "Resistor_SMD:R_1206_3216Metric")]
+        nets = [{"name": "+24V", "class": "power", "pins": ["U1.2"]},
+                {"name": "GND", "class": "power", "pins": ["U1.1", "R2.2", "C13.2", "R6.2"]},
+                {"name": "SW", "pins": ["U1.8", "L1.1"]},
+                {"name": "+12V", "class": "power", "pins": ["L1.2", "R1.1", "C13.1", "R6.1"]},
+                {"name": "FB", "pins": ["U1.5", "R1.2", "R2.1"]}]
+        return sim.simulate(spec(comps, nets, {"sources": [{"net": "+24V", "volts": 24}]}), tmp_path, engine=engine)
+    r = run({})
+    assert len(r["problems"]) == 1 and r["problems"][0].startswith("+12V has no source"), r["problems"]
+    r = run({"pins_map": {"VIN": "2", "FB": "5", "GND": "1", "EN": "3"}, "vref": 1.2})
+    assert not r["problems"], r["problems"]
+    assert abs(next(x["volts"] for x in r["rails"] if x["net"] == "+12V") - 12.1) < 0.2

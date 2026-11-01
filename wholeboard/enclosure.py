@@ -58,6 +58,9 @@ SPEC_DOC = """{
   "mounting_ears": false,                # tabs with screw holes for fixing the box to a surface
   "label": {"text": "BLINKER", "size_mm": 6, "x_mm": null, "y_mm": null}   # engraved in the lid; null = centred
 }
+The label's letters are kept 1 mm clear of every lid hole, vent and screw head and 2 mm inside the lid's edge:
+if they would touch one where asked, the label moves to the nearest clear spot (or is made smaller), and the
+build's notes say so.
 Walls are named as seen in the board's top view: "left", "right", "top" (y_mm = 0 side) and "bottom".
 For a custom opening, at_mm is the position along the wall in board coordinates (y_mm on the left
 and right walls, x_mm on the top and bottom walls) and z_mm is the opening's centre height above the
@@ -539,12 +542,8 @@ def resolve(ctx: dict, enc: dict) -> dict:
         lh = job["label"]["size"] * 1.2
         lab_box = (job["label"]["x"] - lw / 2 - 1.5, job["label"]["y"] - lh / 2 - 1.5,
                    job["label"]["x"] + lw / 2 + 1.5, job["label"]["y"] + lh / 2 + 1.5)
-        for hh in holes:
-            r = hh.get("d", max(hh.get("w", 0), hh.get("h", 0))) / 2
-            if lab_box[0] - r < hh["x"] < lab_box[2] + r and lab_box[1] - r < hh["y"] < lab_box[3] + r:
-                notes.append(f"The label overlaps the lid hole for {hh['name']}; move it with label x_mm/y_mm.")
-        if lw > ow - 4:
-            notes.append("The label is wider than the lid; use a smaller size_mm or shorter text.")
+        # (FreeCAD checks the real letters against every lid hole, vent and screw, and moves or shrinks the
+        # label to keep clear of them; this estimate only keeps the lid vents away from where it was asked for)
 
     # Vents.
     vents = enc.get("vents") or {}
@@ -803,6 +802,7 @@ def build(geo: dict, spec: dict, enc: dict, out_dir: Path, name: str, cfg: dict 
                "collisions": report.get("collisions", []),
                "print_volume_cm3": round(vol / 1000, 1), "filament_g": round(vol / 1000 * 1.24, 1),
                "freecad_notes": report.get("notes", []), "warnings": warnings,
+               **({"label": report.get("label")} if job.get("label") else {}),
                "files": {k: str(v) for k, v in report["files"].items()}, "preview": str(preview)}
     summary["print"] = print_estimate(vol, (cfg or {}).get("printing"))
     (out_dir / f"{name}-enclosure.json").write_text(json.dumps(summary, indent=1))

@@ -394,7 +394,7 @@ BUILTIN: list[dict] = [
                        "Keep the input capacitors, the IC and the inductor tight together; SW is a noisy node.",
         "components": [{"ref": "U1", "value": "TPS563201", "footprint": "Package_TO_SOT_SMD:SOT-23-6",
                         "symbol": "Regulator_Switching:TPS563201", "lcsc": "C116592", "mpn": "TPS563201DDCR",
-                        "description": f"{volts} V 3 A synchronous buck"},
+                        "description": f"{volts} V 3 A synchronous buck", "sim": {"vref": 0.768}},
                        {"ref": "L1", "value": f"{l_uh}uH", "footprint": L_FP, "symbol": "Device:L", "lcsc": l_lcsc,
                         "description": f"{l_uh} µH buck inductor"},
                        _c("C1", "10uF", C10U, "buck input", C0805_FP), _c("C2", "10uF", C10U, "buck input", C0805_FP),

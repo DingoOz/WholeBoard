@@ -8,6 +8,7 @@ Coordinates are millimetres: X right, Y towards the board's top edge, Z up from 
 """
 
 import json
+import math
 import os
 import traceback
 
@@ -16,6 +17,7 @@ import Part
 
 V = App.Vector
 NOTES = []
+REPORT = {}       # extra results for the report (where the label went)
 
 
 def say(msg):
@@ -163,25 +165,96 @@ def snap_catches(job):
     return out
 
 
-def label_solid(job):
+LABEL_GAP = 1.0    # plain lid kept between the engraved letters and a hole, slot or screw head
+LABEL_EDGE = 2.0   # and between the letters and the lid's outer edge
+LABEL_MIN = 3.0    # the smallest text size the label is shrunk to when it fits nowhere
+
+
+def label_text(job, size):
+    """The label's letters as one solid, centred on the origin, cut lab["depth"] into the lid's top."""
+    lab = job["label"]
+    chars = Part.makeWireString(lab["text"], lab["font"], size, 0)
+    faces = []
+    for wires in chars:   # one list of wires per character
+        wires = [w for w in wires if w.isClosed()]
+        if wires:
+            faces.append(Part.makeFace(wires, "Part::FaceMakerBullseye"))
+    if not faces:
+        return None
+    comp = Part.makeCompound(faces)
+    bb = comp.BoundBox
+    comp.translate(V(-(bb.XMin + bb.XMax) / 2, -(bb.YMin + bb.YMax) / 2, job["base_h"] + job["lid_t"] - lab["depth"]))
+    return comp.extrude(V(0, 0, lab["depth"] + 0.5))
+
+
+def place_label(job, features):
+    """Engrave the label where no letter comes within LABEL_GAP of a lid feature (an LED window, a button hole,
+    a vent, a screw head) or within LABEL_EDGE of the lid's edge: where it was asked for when that is clear, else
+    at the nearest clear spot, else smaller. features: (name, solid) of every cut through the lid.
+    Returns the label's solid, or None when it fits nowhere; REPORT["label"] says where it went."""
     lab = job.get("label")
     if not lab:
         return None
+    ow, oh = job["outer"]
+    flat = [(n, s, s.BoundBox) for n, s in features if s is not None]
+    exact = [0]       # exact distance checks made, capped so a crowded lid stays quick
+
+    def hits(solid, x, y):
+        """The features the letters at (x, y) come too close to: bounding boxes first, exact distance after."""
+        bb = solid.BoundBox
+        x0, x1, y0, y1 = bb.XMin + x, bb.XMax + x, bb.YMin + y, bb.YMax + y
+        near = [(n, s) for n, s, fb in flat if x0 - LABEL_GAP < fb.XMax and fb.XMin < x1 + LABEL_GAP
+                and y0 - LABEL_GAP < fb.YMax and fb.YMin < y1 + LABEL_GAP]
+        if not near:
+            return []
+        exact[0] += 1
+        moved = solid.copy()
+        moved.translate(V(x, y, 0))
+        return [n for n, s in near if moved.distToShape(s)[0] < LABEL_GAP - 1e-6]
+
     try:
-        chars = Part.makeWireString(lab["text"], lab["font"], lab["size"], 0)
-        faces = []
-        for wires in chars:   # one list of wires per character
-            wires = [w for w in wires if w.isClosed()]
-            if wires:
-                faces.append(Part.makeFace(wires, "Part::FaceMakerBullseye"))
-        if not faces:
-            return None
-        comp = Part.makeCompound(faces)
-        bb = comp.BoundBox
-        top = job["base_h"] + job["lid_t"]
-        comp.translate(V(lab["x"] - (bb.XMin + bb.XMax) / 2, lab["y"] - (bb.YMin + bb.YMax) / 2,
-                         top - lab["depth"]))
-        return comp.extrude(V(0, 0, lab["depth"] + 0.5))
+        size = float(lab["size"])
+        hits_at_ask = None
+        while size >= LABEL_MIN - 1e-6:
+            solid = label_text(job, size)
+            if solid is None:
+                return None
+            bb = solid.BoundBox
+            # where the label's centre may go so every letter stays LABEL_EDGE inside the lid
+            xs = (LABEL_EDGE - bb.XMin, ow - LABEL_EDGE - bb.XMax)
+            ys = (LABEL_EDGE - bb.YMin, oh - LABEL_EDGE - bb.YMax)
+            if xs[0] <= xs[1] and ys[0] <= ys[1]:
+                want = (min(max(lab["x"], xs[0]), xs[1]), min(max(lab["y"], ys[0]), ys[1]))
+                if hits_at_ask is None:
+                    hits_at_ask = hits(solid, lab["x"], lab["y"]) if want == (lab["x"], lab["y"]) else ["the lid's edge"]
+                # nearest first, on a 0.5 mm grid
+                exact[0] = 0
+                grid = [(xs[0] + 0.5 * i, ys[0] + 0.5 * j) for i in range(int((xs[1] - xs[0]) / 0.5) + 1)
+                        for j in range(int((ys[1] - ys[0]) / 0.5) + 1)] or [want]
+                grid.sort(key=lambda p: (p[0] - want[0]) ** 2 + (p[1] - want[1]) ** 2)
+                grid.insert(0, want)      # where it was asked for (or the nearest spot inside the edge) first
+                for x, y in grid:
+                    found = hits(solid, x, y)
+                    if not found:
+                        solid.translate(V(x, y, 0))
+                        moved = math.hypot(x - lab["x"], y - lab["y"])
+                        REPORT["label"] = {"x": round(x, 2), "y": round(y, 2), "size": size, "moved_mm": round(moved, 1)}
+                        if moved > 0.05 or size < float(lab["size"]):
+                            what = ", ".join(dict.fromkeys(hits_at_ask or [])) or "the lid's features"
+                            NOTES.append("The label \"%s\" would have run into %s, so it was %s." % (
+                                lab["text"], what,
+                                ("moved %.1f mm" % moved if moved > 0.05 else "")
+                                + (" and " if moved > 0.05 and size < float(lab["size"]) else "")
+                                + ("made %g mm high (asked %g mm)" % (size, float(lab["size"]))
+                                   if size < float(lab["size"]) else "")))
+                        return solid
+                    if exact[0] > 400:
+                        break
+            size = round(size * 0.85, 2)
+        NOTES.append("The label \"%s\" was left off: it fits nowhere on the lid clear of the holes, vents and "
+                     "screws, even at %g mm. Use shorter text, or move or drop a lid hole." % (lab["text"], LABEL_MIN))
+        REPORT["label"] = None
+        return None
     except Exception as ex:  # noqa: BLE001
         NOTES.append("The label could not be engraved (%s)." % ex)
         return None
@@ -216,24 +289,24 @@ def build_lid(job):
     for p in job["posts"]:
         adds.append(cyl(p["x"], p["y"], p["z0"], p["d"], p["z1"] - p["z0"] + 0.01))
     shape = fuse_all(shape, adds)
-    cuts = []
+    features = []     # (name, solid) of every cut through the lid; the label keeps clear of them all
     depth = lid_t + lid.get("lip_d", 0) + 2
     for h in job["lid_holes"]:
         z = base_h - lid.get("lip_d", 0) - 1
+        name = "the lid hole for %s" % h.get("name", "a part")
         if h["shape"] == "rect":
-            cuts.append(rbox(h["x"] - h["w"] / 2, h["y"] - h["h"] / 2, z, h["w"], h["h"], depth,
-                             min(1.0, min(h["w"], h["h"]) / 2 - 0.02)))
+            features.append((name, rbox(h["x"] - h["w"] / 2, h["y"] - h["h"] / 2, z, h["w"], h["h"], depth,
+                                        min(1.0, min(h["w"], h["h"]) / 2 - 0.02))))
         else:
-            cuts.append(cyl(h["x"], h["y"], z, h["d"], depth))
+            features.append((name, cyl(h["x"], h["y"], z, h["d"], depth)))
     for s in job["lid_slots"]:
-        cuts.append(rbox(s["x"], s["y"], base_h - 1, s["w"], s["h"], lid_t + 2, s["w"] / 2 - 0.02))
+        features.append(("a lid vent", rbox(s["x"], s["y"], base_h - 1, s["w"], s["h"], lid_t + 2, s["w"] / 2 - 0.02)))
     for c in lid.get("columns", []):
-        cuts.append(cyl(c["x"], c["y"], base_h - 1, c["clear"], lid_t + 2))
+        features.append(("a lid screw", cyl(c["x"], c["y"], base_h - 1, c["clear"], lid_t + 2)))
         cb = min(1.2, lid_t - 0.6)
         if cb > 0.2:
-            cuts.append(cyl(c["x"], c["y"], base_h + lid_t - cb, c["head"] + 0.4, cb + 1))
-    cuts.append(label_solid(job))
-    return cut_all(shape, cuts)
+            features.append(("a lid screw", cyl(c["x"], c["y"], base_h + lid_t - cb, c["head"] + 0.4, cb + 1)))
+    return cut_all(shape, [s for _, s in features] + [place_label(job, features)])
 
 
 def board_and_blocks(job):
@@ -310,7 +383,7 @@ def main(job):
         mesh_to_stl(shape, f, fine=False)
         preview.append({"file": f, "name": label, "group": group, "kind": kind})
     return {"volumes_mm3": {"base": round(base.Volume, 1), "lid": round(lid.Volume, 1)},
-            "collisions": collisions, "notes": NOTES, "files": files, "preview": preview}
+            "collisions": collisions, "notes": NOTES, "files": files, "preview": preview, **REPORT}
 
 
 def run():

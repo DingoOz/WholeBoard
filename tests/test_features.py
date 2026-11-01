@@ -1,5 +1,6 @@
 """Tests for the 3D models, cost cutting, import, history, firmware, password, panel and print features."""
 import io
+import json
 import zipfile
 
 import pytest
@@ -256,6 +257,23 @@ def test_local_model_search_reads_each_server(monkeypatch):
     got = {m["base_url"]: m for m in providers.find_local_models()["models"]}
     assert got["http://localhost:8080/v1"]["server"] == "Strata 0.1.47" and got["http://localhost:8080/v1"]["tools"] is True
     assert got["http://localhost:1337/v1"]["server"] == "Strata"
+    # Strata 0.2.9 with DeepSeek V4.1-Flash-1017 on 8090: no version in /props, and its tool check (made for Qwen's
+    # <tool_call>) says no tools, though it parses DeepSeek's DSML calls; it lists an image generator beside the model
+    replies["http://localhost:8090/v1/models"] = {"data": [
+        {"id": "deepseek-v4.1-flash", "status": {"value": "loaded"}, "meta": {"n_ctx": 131072},
+         "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]}},
+        {"id": "flux", "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}}]}
+    replies["http://localhost:8090/props"] = {"default_generation_settings": {}, "chat_template": "{% if tools %}DSML{% endif %}",
+                                              "chat_template_caps": {"supports_tool_calls": False}}
+    replies["http://localhost:8090/health"] = {"status": "ok", "service": "strata"}
+    got = [m for m in providers.find_local_models()["models"] if m["base_url"] == "http://localhost:8090/v1"]
+    assert got == [{"server": "Strata", "base_url": "http://localhost:8090/v1", "model": "deepseek-v4.1-flash",
+                    "tools": True, "detail": "131k context · reads images · loaded"}]
+    # llama.cpp's own caps are trusted as they are
+    replies["http://localhost:8080/props"] = {"default_generation_settings": {}, "chat_template": "{{ tools }}",
+                                              "chat_template_caps": {"supports_tool_calls": False}}
+    got = {m["base_url"]: m for m in providers.find_local_models()["models"]}
+    assert got["http://localhost:8080/v1"]["server"] == "llama.cpp" and got["http://localhost:8080/v1"]["tools"] is False
 
 
 def test_lan_search_scans_this_computers_subnet(monkeypatch):
@@ -372,6 +390,132 @@ def test_unreachable_ai_server_says_why():
     assert "dropped the connection" in said[dropping] and "forwarder" in said[dropping]
     assert said[closed].startswith("Nothing is answering at")
     srv.close()
+
+
+def test_deepseek_reasoning_stays_in_the_history():
+    """DeepSeek V4.1's template puts each earlier turn's thinking back when tools are in use, so it is sent back."""
+    import http.server
+    import json
+    import threading
+
+    from wholeboard.ai.providers import OpenAISession
+    asked = []
+    replies = [{"role": "assistant", "content": None, "reasoning_content": "Need a 10k part: search.",
+                "tool_calls": [{"id": "c1", "type": "function",
+                                "function": {"name": "find_passive", "arguments": '{"value": "10k"}'}}]},
+               {"role": "assistant", "content": "C25744."}]
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            asked.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            m = replies[len(asked) - 1]
+            body = json.dumps({"id": "x", "object": "chat.completion", "created": 0, "model": "deepseek-v4.1-flash",
+                               "choices": [{"index": 0, "message": m,
+                                            "finish_reason": "tool_calls" if m.get("tool_calls") else "stop"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    tool = {"name": "find_passive", "description": "d",
+            "input_schema": {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}}
+    session = OpenAISession({"openai_base_url": f"http://127.0.0.1:{srv.server_port}/v1", "openai_model": "m"},
+                            "system", [tool])
+    assert session.client.timeout == 7200                  # a local model may think for most of an hour
+    session.add_user("Pick a 10k resistor.")
+    turn = session.step()
+    assert turn.calls[0].input == {"value": "10k"} and turn.text == ""
+    session.add_tool_results([(turn.calls[0].id, '{"lcsc": "C25744"}', False)])
+    assert session.step().text == "C25744."
+    sent = asked[1]["messages"][2]
+    assert sent["role"] == "assistant" and sent["reasoning_content"] == "Need a 10k part: search."
+    assert "reasoning_content" not in asked[0]["messages"][-1]
+    srv.shutdown()
+
+
+def _design_session(window, rounds):
+    """An OpenAI session partway through a design: each round thinks, submits a spec and gets a long result."""
+    from wholeboard.ai.providers import OpenAISession
+    s = OpenAISession({"openai_base_url": "http://127.0.0.1:9/v1", "openai_model": "m", "openai_context": window},
+                      "system", [])
+    s.recall = lambda: "the current spec"
+    s.add_user("Make a level gauge board.")
+    for i in range(rounds):
+        s.messages.append({"role": "assistant", "content": f"Round {i}.", "reasoning_content": "think " * 500,
+                           "tool_calls": [{"id": f"c{i}", "type": "function", "function": {
+                               "name": "submit_design", "arguments": json.dumps({"spec": "x" * 3000})}}]})
+        s.add_tool_results([(f"c{i}", "result " * 600, False)])
+    return s
+
+
+def test_a_conversation_near_the_context_window_is_shortened():
+    s = _design_session(30000, 8)                 # about 23k tokens at 0.3 a character: over 70 %
+    assert s.compact() and s.estimate() < 0.45 * 30000
+    assert s.messages[1]["content"] == "Make a level gauge board."
+    replies = [m for m in s.messages if m["role"] == "assistant"]
+    assert len(replies) == 8 and all("reasoning_content" in m for m in replies[-3:])      # the newest stay whole
+    assert "reasoning_content" not in replies[0] and "shortened" in replies[0]["tool_calls"][0]["function"]["arguments"]
+    assert s.messages[-1] == {"role": "user", "content": "the current spec", "_recall": True}
+    for i, m in enumerate(s.messages):            # every tool result still answers the call before it
+        if m["role"] == "tool":
+            assert s.messages[i - 1]["role"] in ("assistant", "tool")
+    assert not s.compact()                        # well inside the window now
+    # a second compaction replaces the older copy of the spec
+    for i in range(8, 14):
+        s.messages.append({"role": "assistant", "content": "", "reasoning_content": "think " * 500, "tool_calls": [
+            {"id": f"c{i}", "type": "function", "function": {"name": "simulate", "arguments": "{}"}}]})
+        s.add_tool_results([(f"c{i}", "result " * 600, False)])
+    assert s.compact()
+    assert [m["content"] for m in s.messages if m["content"] == "the current spec"] == ["the current spec"]
+
+
+def test_a_conversation_too_long_to_shorten_keeps_a_list_of_its_steps():
+    s = _design_session(9000, 40)
+    assert s.compact()
+    assert [m["role"] for m in s.messages[:3]] == ["system", "user", "user"]
+    assert "You said: Round 0." in s.messages[2]["content"] and "You called submit_design" in s.messages[2]["content"]
+    assert s.messages[3]["role"] == "assistant" and s.messages[3]["content"] == "Round 39."
+    assert s.estimate() < 9000
+
+
+def test_a_server_that_says_the_prompt_is_too_long_gets_a_shorter_one():
+    import http.server
+    import threading
+    asked = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            asked.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            if len(asked) == 1:
+                code, body = 400, {"error": {"message": "the request exceeds the available context size"}}
+            else:
+                code, body = 200, {"id": "x", "object": "chat.completion", "created": 0, "model": "m",
+                                   "choices": [{"index": 0, "finish_reason": "stop",
+                                                "message": {"role": "assistant", "content": "Carrying on."}}],
+                                   "usage": {"prompt_tokens": 3000, "completion_tokens": 3, "total_tokens": 3003}}
+            raw = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    s = _design_session(0, 8)
+    s.client = s.client.with_options(base_url=f"http://127.0.0.1:{srv.server_port}/v1", max_retries=0)
+    s.asked_window = True                         # the server never says its window
+    turn = s.step()
+    assert turn.text == "Carrying on." and "shortened" in turn.notice
+    assert len(json.dumps(asked[1])) < len(json.dumps(asked[0])) / 2
+    srv.shutdown()
 
 
 def test_firmware_finds_the_mcu_not_a_part_whose_description_names_it():

@@ -6,7 +6,8 @@
   support tool (function) calling.
 
 Each session keeps its history in the provider's own format and only ever
-appends to it.
+appends to it, except that OpenAISession shortens its older turns when the
+prompt nears the model's context window (see OpenAISession.compact).
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ class Turn:
     calls: list[ToolCall] = field(default_factory=list)
     stop: str = ""             # end | tool_use | max_tokens | refusal
     note: str = ""             # e.g. which model answered after a fallback
+    notice: str = ""           # shown to the user in the chat, e.g. that older steps were shortened
     usage: dict = field(default_factory=dict)
 
 
@@ -234,6 +236,8 @@ def list_models(cfg: dict) -> list[str]:
 LOCAL_SERVERS = [
     ("Ollama", 11434), ("LM Studio", 1234), ("llama.cpp or Strata", 8080), ("vLLM", 8000), ("Jan", 1337),
     ("KoboldCpp", 5001), ("text-generation-webui", 5000), ("GPT4All", 4891),
+    # Strata's setup serves on 8080; `strata launch` defaults to 8095, and a second install often goes on 8090
+    ("Strata", 8095), ("Strata", 8090),
 ]
 # owned_by values that name the server better than its port does (8080 is shared by several)
 _OWNERS = {"llamacpp": "llama.cpp", "vllm": "vLLM", "localai": "LocalAI", "koboldcpp": "KoboldCpp"}
@@ -295,31 +299,67 @@ def _probe(name: str, base: str) -> list[dict]:
         return []
     # Name the server only when it says what it is: a port alone can be anything (a proxy, say).
     where, tools = base.split("//", 1)[-1].removesuffix("/v1"), None
+    def strata() -> bool:
+        try:
+            return str(_get_json(root + "/health").get("service", "")).lower() == "strata"
+        except Exception:  # noqa: BLE001
+            return False
     try:
-        # llama.cpp's /props; Strata (stratallm.org) serves the same shape and names itself in build_info
+        # llama.cpp's /props; Strata (stratallm.org) serves the same shape and names itself in build_info,
+        # when its engine reports a version
         props = _get_json(root + "/props")
         if "default_generation_settings" in props:
             build = str(props.get("build_info") or "")
-            where = build if build.lower().startswith("strata") else "llama.cpp"
-            caps = props.get("chat_template_caps")
+            where = build if build.lower().startswith("strata") else "Strata" if strata() else "llama.cpp"
+            template, caps = str(props.get("chat_template") or ""), props.get("chat_template_caps")
             if isinstance(caps, dict) and "supports_tool_calls" in caps:
                 tools = bool(caps["supports_tool_calls"])
-            elif props.get("chat_template"):            # a template that never mentions tools cannot take them
-                tools = "tools" in props["chat_template"]
+                # Strata checks only for Qwen's <tool_call> format, so a DeepSeek V4.1 template (DSML calls,
+                # which Strata does parse) reads as no tools; the template taking tools is the better sign there
+                if not tools and where.startswith("Strata"):
+                    tools = "tools" in template
+            elif template:                              # a template that never mentions tools cannot take them
+                tools = "tools" in template
     except Exception:  # noqa: BLE001 - not llama.cpp; Strata still answers /health
-        try:
-            if str(_get_json(root + "/health").get("service", "")).lower() == "strata":
-                where = "Strata"
-        except Exception:  # noqa: BLE001
-            pass
+        if strata():
+            where = "Strata"
     for m in data:
         if re.search(r"embed", m.get("id", ""), re.I):
             continue
         status = m.get("status")
-        detail = [_ctx((m.get("meta") or {}).get("n_ctx")), status.get("value") if isinstance(status, dict) else None]
+        arch = m.get("architecture") or {}
+        if "text" not in (arch.get("output_modalities") or ["text"]):
+            continue                                      # an image generator (Strata lists one beside the chat model)
+        detail = [_ctx((m.get("meta") or {}).get("n_ctx")),
+                  "reads images" if "image" in (arch.get("input_modalities") or []) else None,
+                  status.get("value") if isinstance(status, dict) else None]
         models.append({"server": _OWNERS.get(str(m.get("owned_by", "")).lower(), where), "base_url": base,
                        "model": m["id"], "tools": tools, "detail": " · ".join(x for x in detail if x)})
     return models
+
+
+def served_context(base: str, model: str) -> int | None:
+    """The context window, in tokens, the server at base runs model with, when it says."""
+    root = base.rstrip("/").removesuffix("/v1")
+    try:                                      # llama.cpp and Strata (meta.n_ctx), vLLM (max_model_len)
+        for m in _get_json(base.rstrip("/") + "/models")["data"]:
+            if m.get("id") == model:
+                n = (m.get("meta") or {}).get("n_ctx") or m.get("max_model_len") or m.get("context_length")
+                if n:
+                    return int(n)
+    except Exception:  # noqa: BLE001
+        pass
+    for url, keys in ((root + "/props", ("default_generation_settings", "n_ctx")),          # llama.cpp
+                      (f"{root}/api/v0/models/{model}", ("loaded_context_length",)),      # LM Studio
+                      (f"{root}/api/v0/models/{model}", ("max_context_length",))):
+        try:
+            v = _get_json(url)
+            for k in keys:
+                v = v[k]
+            return int(v)
+        except Exception:  # noqa: BLE001
+            continue
+    return None
 
 
 def find_local_models(extra_url: str | None = None) -> dict:
@@ -439,8 +479,10 @@ class OpenAISession:
         import openai
 
         self._openai = openai
+        # One reply can take most of an hour on a local model that thinks at length (DeepSeek V4.1 on Strata
+        # can write as few as 15 tokens a second), and it costs nothing to wait.
         self.client = openai.OpenAI(base_url=cfg.get("openai_base_url") or None,
-                                    api_key=openai_key(cfg), timeout=1800)
+                                    api_key=openai_key(cfg), timeout=7200 if _local(cfg) else 1800)
         self.model = cfg.get("openai_model") or "qwen3:32b"
         self.schemas = {t["name"]: t["input_schema"] for t in tools}
         self.tools = [{"type": "function", "function": {
@@ -448,6 +490,10 @@ class OpenAISession:
             for t in tools]
         self.messages: list = [{"role": "system", "content": system}]
         self.vision_failed = False
+        self.window = int(cfg.get("openai_context") or 0) or None    # None: ask the server at the first step
+        self.asked_window = bool(self.window)
+        self.per_char = 0.3                   # tokens per character of the history, measured at each reply
+        self.recall = None                    # () -> text that brings a shortened history up to date (the spec)
 
     @property
     def label(self) -> str:
@@ -487,6 +533,93 @@ class OpenAISession:
             self.vision_failed = True
         return found
 
+    # ------------------------------------------------------------ keeping the prompt inside the context window
+    COMPACT_AT = 0.7      # of the window: leaves room for a long thinking reply and the next tool results
+    COMPACT_TO = 0.45
+    KEEP_TURNS = 3        # the newest replies, with their tool results, are never shortened
+
+    @staticmethod
+    def _chars(m: dict) -> int:
+        """A message's size in characters, an image counted as the text it costs a model about."""
+        n = len(json.dumps({k: v for k, v in m.items() if k != "content" and not k.startswith("_")}))
+        c = m.get("content")
+        if isinstance(c, list):
+            return n + sum(len(x.get("text", "")) if x.get("type") == "text" else 3000 for x in c)
+        return n + len(c or "")
+
+    def _size(self) -> int:
+        return len(json.dumps(self.tools)) + sum(self._chars(m) for m in self.messages)
+
+    def estimate(self) -> int:
+        """The prompt's size in tokens, scaled from what the server counted for the last request."""
+        return int(self._size() * self.per_char)
+
+    def _context_window(self) -> int | None:
+        if not self.asked_window:
+            self.asked_window = True
+            self.window = served_context(str(self.client.base_url), self.model)
+        return self.window
+
+    def _tail(self, turns: int) -> int:
+        """The index where the newest turns (each an assistant reply) begin."""
+        replies = [i for i, m in enumerate(self.messages) if m["role"] == "assistant"]
+        return replies[-turns] if len(replies) >= turns else len(self.messages)
+
+    @staticmethod
+    def _shorten(m: dict) -> None:
+        m.pop("reasoning_content", None)
+        if m.pop("_recall", False):
+            m["content"] = "(An older copy of the design spec was here; a later one follows.)"
+        elif m["role"] == "tool" and len(m["content"]) > 600:
+            m["content"] = (m["content"][:400] + "\n… (shortened to fit the model's context; "
+                            "call the tool again if you need all of it)")
+        elif m.get("_images") or isinstance(m.get("content"), list):
+            m.pop("_images", None)
+            m["content"] = "(Board renders shown here earlier were removed to fit the model's context.)"
+        for tc in m.get("tool_calls") or []:
+            if len(tc["function"]["arguments"]) > 1500:
+                tc["function"]["arguments"] = json.dumps(
+                    {"shortened": "these arguments were removed to fit the model's context"})
+
+    def compact(self, force: bool = False) -> str:
+        """Shorten older turns when the prompt nears the context window; what was done, for the chat ("" if nothing).
+
+        First the older turns lose their thinking, long tool results, long call arguments (a whole spec, say) and
+        images. If that is not enough, they are replaced by one message listing the calls made and what was said.
+        Either way recall() (the current spec) follows, since the call that sent it may be among those shortened.
+        The changed history costs the server one full read of the prompt; it is cached again after that.
+        """
+        window = self._context_window()
+        before = self.estimate()
+        if not window or (before < self.COMPACT_AT * window and not force):
+            return ""
+        target = self.COMPACT_TO * window
+        for keep in (self.KEEP_TURNS, 1):
+            for m in self.messages[2:self._tail(keep)]:
+                self._shorten(m)
+            if self.estimate() <= target:
+                break
+        else:
+            cut = self._tail(1)
+            done = []
+            for m in self.messages[2:cut]:
+                if m["role"] == "assistant":
+                    if (m.get("content") or "").strip():
+                        done.append("You said: " + m["content"].strip()[:600])
+                    for tc in m.get("tool_calls") or []:
+                        done.append(f"You called {tc['function']['name']}({tc['function']['arguments'][:150]})")
+            if len(done) > 80:
+                done = done[:20] + [f"… {len(done) - 60} more steps …"] + done[-40:]
+            note = ("(Earlier steps of this conversation were removed to fit the model's context. In order:\n"
+                    + "\n".join(done) + ")")
+            self.messages[2:cut] = [{"role": "user", "content": note}] if cut > 2 else []
+        extra = self.recall() if self.recall else ""
+        if extra:
+            self.messages.append({"role": "user", "content": extra, "_recall": True})
+        after = self.estimate()
+        return (f"The conversation was near the model's {window // 1000}k-token context, so older steps were "
+                f"shortened (about {before // 1000}k → {after // 1000}k tokens).")
+
     def _tool_args(self) -> dict:
         return {"tools": self.tools, "tool_choice": "auto"} if self.tools else {}
 
@@ -495,16 +628,21 @@ class OpenAISession:
 
     def step(self) -> Turn:
         o = self._openai
+        notice = self.compact()
         try:
             try:
-                resp = self.client.chat.completions.create(model=self.model, messages=self._wire(), **self._tool_args())
+                wire = self._wire()
+                resp = self.client.chat.completions.create(model=self.model, messages=wire, **self._tool_args())
             except (o.BadRequestError, o.InternalServerError, o.UnprocessableEntityError) as e:
-                if not any(m.get("_images") for m in self.messages):
-                    raise
-                if not self._drop_images():
+                if re.search(r"context|too long|too many tokens|exceed", str(e), re.I) and len(self.messages) > 3:
+                    if not self.window:            # the server knows its limit even when it would not say it
+                        self.window = int(self.estimate() / self.COMPACT_AT)
+                    notice = self.compact(force=True) or notice
+                elif not any(m.get("_images") for m in self.messages) or not self._drop_images():
                     raise
                 del e
-                resp = self.client.chat.completions.create(model=self.model, messages=self._wire(), **self._tool_args())
+                wire = self._wire()
+                resp = self.client.chat.completions.create(model=self.model, messages=wire, **self._tool_args())
         except o.AuthenticationError as e:
             raise AIError("The AI server rejected the API key. Check it in Settings.") from e
         except o.NotFoundError as e:
@@ -516,7 +654,16 @@ class OpenAISession:
         choice = resp.choices[0]
         m = choice.message
         entry: dict = {"role": "assistant", "content": m.content or ""}
-        turn = Turn(text=(m.content or "").strip())
+        # DeepSeek V4.1 (on Strata or DeepSeek's own API) returns its thinking apart from the reply, and with tools
+        # its template puts every earlier turn's thinking back in the prompt: keep it, or each step it sees reads as
+        # one it answered without thinking. Only the replies that carry it send it back.
+        reasoning = (m.model_extra or {}).get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            entry["reasoning_content"] = reasoning
+        turn = Turn(text=(m.content or "").strip(), notice=notice)
+        if resp.usage and resp.usage.prompt_tokens:
+            size = len(json.dumps(self.tools)) + sum(self._chars(x) for x in wire)
+            self.per_char = resp.usage.prompt_tokens / max(size, 1)
         if resp.usage:
             cached = getattr(getattr(resp.usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
             turn.usage = {"input": (resp.usage.prompt_tokens or 0) - cached, "output": resp.usage.completion_tokens or 0,
@@ -540,7 +687,6 @@ class OpenAISession:
             turn.stop = "tool_use" if turn.calls else "end"
         # Some local models print their reasoning in <think> tags; keep it out of the chat.
         if "<think>" in turn.text:
-            import re
             turn.text = re.sub(r"<think>.*?</think>", "", turn.text, flags=re.S).strip()
         return turn
 
