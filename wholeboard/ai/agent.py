@@ -346,8 +346,18 @@ class Agent:
         ai = config.load()["ai"]
         tools = TOOLS if expert.settings(ai) else [t for t in TOOLS if t["name"] != "consult_expert"]
         sess = make_session(ai, SYSTEM, tools)
+        sess.recall = self._recall
         self.p.state["ai_label"] = sess.label
         return sess
+
+    def _recall(self) -> str:
+        """What a session whose older steps were shortened needs to carry on: the current spec."""
+        spec = self.p.state.get("spec")
+        if not spec:
+            return ""
+        return (f"(WholeBoard: older steps were shortened to fit your context. The current design spec, revision "
+                f"{self.p.state.get('revision')}, is below; carry on from where you were.)\n```json\n"
+                f"{json.dumps(spec)}\n```")
 
     def _run(self, user_text: str) -> None:
         p = self.p
@@ -383,6 +393,8 @@ class Agent:
             self._count(turn.usage)
             if turn.note:
                 p.log("agent", turn.note)
+            if turn.notice:
+                p.chat("system", turn.notice)
             if turn.text:
                 p.chat("assistant", turn.text)
             if turn.stop == "refusal":

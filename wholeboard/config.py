@@ -25,6 +25,8 @@ DEFAULTS: dict = {
         "openai_model": "qwen3:32b",
         "openai_price_in": 0,       # US$ per million tokens, for cost tracking (0 = free / local)
         "openai_price_out": 0,
+        "openai_context": 0,        # the model's context window in tokens (0 = ask the server); older steps are
+                                    # shortened when the conversation nears it
         "max_turns": 60,
         # a stronger model that plans and reviews while the model above does the legwork
         "expert": {"enabled": False, "provider": "anthropic", "model": "claude-opus-5-5", "effort": "high"},

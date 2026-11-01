@@ -29,6 +29,14 @@ WholeBoard has no releases yet, so changes are grouped by date.
   and tool-calling support, and fills in the settings for the one picked.
 - Search the LAN for model servers: checks every address in the subnet the computer is on (a subnet larger than a
   /22 is narrowed to the /24 around it), only within the private ranges.
+- The model search supports Strata 0.2.9 with DeepSeekV4.1-Flash-1017: it also checks Strata's other ports (8095,
+  8090), shows the model as taking tools (Strata's own check reads DeepSeek's tool-call format as none) and says
+  when a model reads images. DeepSeek's thinking stays in the history so each tool step keeps its reasoning, and
+  a local server gets two hours per reply.
+- Long conversations with an OpenAI-compatible model stay inside its context window: near 70 % of it, the older
+  steps lose their thinking, long tool results and old specs (falling back to a list of the steps taken), and the
+  current spec is given again. The window comes from the server (llama.cpp, Strata, vLLM, LM Studio) or *Settings
+  → AI → Context window*; a server that says the prompt is too long gets a shortened one.
 - A Summary step for a finished board: the render, price, order button, a tile per check, and the designer's
   things to check before ordering as a checklist. Finished boards open on it.
 - Board titles: the designer names each board, and you can rename it. The boards list shows a render, how long

@@ -1931,7 +1931,7 @@ async function findLocalModels(lan = false) {
     out.textContent = lan
       ? `No model servers answered on ${nets}. Ollama, LM Studio and llama.cpp only listen on their own computer `
         + "unless told to serve the network: set OLLAMA_HOST=0.0.0.0 for Ollama, turn on Serve on Local Network in "
-        + "LM Studio, or start llama.cpp with --host 0.0.0.0."
+        + "LM Studio, or start llama.cpp or Strata with --host 0.0.0.0."
       : "No local models found. Start Ollama, LM Studio or llama.cpp on the computer running WholeBoard, "
         + "or type its Server URL below, then search again.";
     return;
@@ -1951,6 +1951,7 @@ async function findLocalModels(lan = false) {
         field("openai_base_url").value = m.base_url;
         field("openai_model").value = m.model;
         field("openai_price_in").value = 0; field("openai_price_out").value = 0;   // local models cost nothing per token
+        field("openai_context").value = 0;                                         // ask this server for its window
         const dl = $("#openaiModels"); dl.innerHTML = "";
         for (const x of r.models.filter(x => x.base_url === m.base_url)) dl.append(el("option", { value: x.model }));
         syncShow();
