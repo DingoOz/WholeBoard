@@ -139,6 +139,21 @@ def _svg(face: str, c: dict, cuts: list) -> str:
     return "\n".join(out)
 
 
+def antenna_report(spec: dict, geo: dict, ctx: dict, c: dict) -> dict | None:
+    """How far each antenna is from the case's walls, lid, floor and the board's screws; a metal case fails."""
+    from . import antenna
+    ants = [a for a in antenna.find_antennas(spec, geo) if a["kind"] != "connector"]
+    if not ants:
+        return None
+    bx0, by0 = geo["bbox"][0], geo["bbox"][1]
+    cav = (bx0 - c["ax"], by0 - c["ay"], bx0 - c["ax"] + c["L"], by0 - c["ay"] + c["W"])
+    fittings = [{"what": "board screw", "x": bx0 + h["x_mm"], "y": by0 + h["y_mm"], "r": h["diameter_mm"] / 2}
+                for h in ctx["mounting_holes"]]
+    material = str(spec["board"]["case"].get("material") or "ABS")
+    return antenna.box_check(ants, cav, {"board": c["standoff"], "thick": c["thick"], "lid": c["H"]}, fittings,
+                             material)
+
+
 def build(spec: dict, geo: dict, out_dir: Path, name: str, part_heights: dict | None = None) -> dict:
     ctx = enclosure.context(geo, spec, part_heights)
     problems, warnings = check(spec, ctx)
@@ -165,7 +180,12 @@ def build(spec: dict, geo: dict, out_dir: Path, name: str, part_heights: dict | 
                     "<p>Print at 100 % and check the 50 mm bar. Tape each template to the outside of its face, "
                     "centre-punch the cross-hairs, drill the round holes and cut the rectangles with a step drill "
                     "and a file.</p><button onclick='print()'>Print</button>" + "".join(sections) + "</body></html>")
+    ant = antenna_report(spec, geo, ctx, c)
+    if ant:
+        problems += ant["problems"]
+        warnings += ant["warnings"]
     return {"ok": not problems, "case": {k: c[k] for k in ("name", "L", "W", "H", "ax", "ay", "standoff")},
+            **({"antenna": ant} if ant else {}),
             "problems": problems, "warnings": warnings, "cutouts": rows, "files": files, "page": page,
             "headroom_mm": round(c["H"] - c["standoff"] - c["thick"] -
                                  max([p["height_mm"] for p in ctx["parts"] if p["side"] == "top"] or [0]), 2)}

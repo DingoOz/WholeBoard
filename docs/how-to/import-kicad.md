@@ -7,6 +7,9 @@ KiCad reads the schematic's netlist: parts, values, footprints, LCSC numbers (fr
 `JLCPCB Part` field) and nets. The board, if given, supplies the outline, layer count, mounting holes and part
 positions.
 
+The project's own schematic is shown on the *Request* step, every sheet of it, and you can
+[trace its nets](trace-nets.md) there.
+
 The AI then checks the design, finds JLCPCB parts for anything without an LCSC number, swaps footprints that are
 not in KiCad's standard libraries, and builds it. With no AI configured, the import is built as it is.
 

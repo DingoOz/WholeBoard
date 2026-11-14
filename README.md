@@ -39,8 +39,8 @@ server. Or [design with Claude Code](https://dingooz.github.io/WholeBoard/how-to
   and nRF52 modules, Ethernet, CAN, RS-485, sensors and more, with real LCSC parts.
 - **Checks before you order**: ERC, ngspice simulation and part ratings, power budget, KiCad DRC
   against JLCPCB's limits, IPC-2152 trace heating, voltage drop, decoupling, controlled impedance
-  with USB/Ethernet/RMII/QSPI/RF interface profiles, and mains creepage and clearance with
-  isolation slots.
+  with USB/Ethernet/RMII/QSPI/RF interface profiles, mains creepage and clearance with
+  isolation slots, and antenna placement on the board and in its box against each vendor's numbers.
 - **Shows the simulation on the 3D board**: current flow, LED brightness, a heat map, the board in
   its enclosure, and sliders that re-run ngspice.
 - **Prices the job**: JLCPCB with live part prices, cheaper drop-in parts, panels drawn with KiKit,

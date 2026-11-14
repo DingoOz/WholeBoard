@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import bringup, checks, config, design, impedance, mains, ngspice, power, sim
+from . import antenna, bringup, checks, config, design, impedance, mains, ngspice, power, sim
 from .jlc import parts as jparts, quote as jquote, stock as jstock
 from .kicad import geometry, importer
 
@@ -88,6 +88,19 @@ TOOLS = [
                     "a current limit from the simulated draw, the voltage and current to expect on each rail, and "
                     "the signals to look for.",
      "inputSchema": {"type": "object", "properties": {"project": PROJECT}, "required": ["project"]}},
+    {"name": "antenna_check",
+     "description": "Antenna placement on the routed board, against each antenna vendor's own numbers (Espressif, "
+                    "Raytac; a labelled generic figure where the vendor gives none): the antenna end at a board edge, "
+                    "no copper under it, no tall or metal parts in its keep-out or in front of it, ground plane under "
+                    "the rest of the module, and a pi matching network on chip antennas and antenna connectors. Give "
+                    "case (the box the board goes in) to check the distance to its walls, lid, floor and screws too; "
+                    "a metal case fails. Each number comes with the document it is from.",
+     "inputSchema": {"type": "object", "properties": {
+         "project": PROJECT,
+         "case": {"type": "object", "description": "The box: {\"inner_mm\": [length, width, height], \"board_at_mm\": "
+                  "[x, y] (the board's top-left from the inside top-left; default centred), \"standoff_mm\": 5, "
+                  "\"wall_mm\": 2, \"material\": \"PLA\", \"ABS\" or \"aluminium\"}."}},
+         "required": ["project"]}},
 ]
 
 
@@ -227,8 +240,24 @@ def call(name: str, args: dict) -> dict:
                 b = power.budget(design.normalise(spec), r)
             except Exception:  # noqa: BLE001
                 b = None
-        g = bringup.guide(design.normalise(spec), r, b, None)
+        ants = None
+        if res.get("pcb"):
+            try:
+                ants = antenna.check(design.normalise(spec), _geo(res))["antennas"]
+            except Exception:  # noqa: BLE001 - the guide is fine without the antenna step
+                ants = None
+        g = bringup.guide(design.normalise(spec), r, b, None, ants)
         return {**head, "markdown": g["markdown"]}
+    if name == "antenna_check":
+        s = design.normalise(spec)
+        geo = _geo(res)
+        out = {**head, **antenna.check(s, geo)}
+        if args.get("case") and out["antennas"]:
+            from . import case as stock_case, enclosure
+            s["board"]["case"] = args["case"]
+            ctx = enclosure.context(geo, s)
+            out["enclosure"] = stock_case.antenna_report(s, geo, ctx, stock_case.layout(s, ctx))
+        return out
     raise KeyError(name)
 
 

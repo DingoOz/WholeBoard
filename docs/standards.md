@@ -46,6 +46,18 @@ interpolating. Both choices are conservative.
 
 Length and skew limits are layout-guide rules of thumb, chosen on the safe side. They are not compliance tests.
 
+## Antennas
+
+| Figure | Source | In the code | Checked |
+|---|---|---|---|
+| Espressif modules: antenna outside the base board, or its feed point as close to the edge as possible; not in the middle of the board with the copper cut away around it | Espressif hardware design guidelines, PCB Layout Design, "General Principles of PCB Layout for Modules (Positioning a Module on a Base Board)" | `antenna.PROFILES` | 2026-11 |
+| Espressif modules: at least 15 mm of clearance in all directions inside the housing | The same section | `antenna.PROFILES` | 2026-11 |
+| Copper keep-out on the board (15 mm around Espressif antennas; under the antenna for Raytac) | KiCad's `RF_Module` footprints, drawn from the module datasheets | `antenna.local_shape` | 2026-11 |
+| Raytac MDBT50Q: module towards the PCB edge; no ground under the antenna on every layer. No distances given | Raytac MDBT50Q-1MV2 / P1MV2 specification, Version K, §2.3 "RF Layout Suggestion (aka Keep-Out Area)" | `antenna.PROFILES` | 2026-11 |
+| Generic clearances where a vendor gives none: 10 mm to plastic, 25 mm to metal, 5 mm to tall or metal parts beside the antenna | WholeBoard's own conservative choice, labelled "generic" wherever it is used | `antenna.GENERIC` | – |
+| Return-loss target, −10 dB across the band | Common practice for 2.4 GHz antennas | `bringup._antenna_step` | – |
+| Permittivity of printed plastics at 2.4 GHz (PLA 2.75, PETG 2.6, ABS 2.5, ASA 2.6, TPU 2.9, PC 2.9) and FR-4 (4.3, tan δ 0.02) | Typical published values; they vary with brand, colour and infill | `antenna_sim.PLASTIC_EPS`, `antenna_sim.FR4` | 2026-11 |
+
 ## Manufacturers and suppliers
 
 | What | Source | In the code | Checked |

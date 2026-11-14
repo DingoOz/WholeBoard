@@ -44,6 +44,14 @@ class Plot {
 
   tx(v) { return this.opts.logx ? Math.log10(Math.max(v, 1e-12)) : v; }
 
+  // An x value as text: time by default, Hz on a log axis (x holds log10 there for ticks), or a plain number in
+  // opts.xunit (the S11 plot's MHz). tip adds the unit for the hover box.
+  xText(v, span, tip = false) {
+    if (this.opts.xunit) return +(+v).toPrecision(5) + (tip ? " " + this.opts.xunit : "");
+    if (this.opts.logx) return tip ? fmt(v) + " Hz" : fmt(10 ** v);
+    return fmtTime(v, span);
+  }
+
   draw(cursor) {
     const c = this.canvas, dpr = (window.devicePixelRatio || 1) * wbZoom();
     const w = this.host.clientWidth || 600, h = this.opts.height || 260;
@@ -73,7 +81,7 @@ class Plot {
     const xt = this.opts.logx ? logTicks(x0, x1) : ticks(x0, x1, 6);
     for (const t of xt) {
       g.beginPath(); g.moveTo(X(t), T); g.lineTo(X(t), h - B); g.stroke();
-      g.textAlign = "center"; g.fillText(this.opts.logx ? fmt(10 ** t) : fmtTime(t, x1), X(t), h - B + 16);
+      g.textAlign = "center"; g.fillText(this.xText(t, x1), X(t), h - B + 16);
     }
     g.textAlign = "left"; g.fillText(this.opts.ylabel || "", L + 4, T + 12);
     g.textAlign = "right"; g.fillText(this.opts.xlabel || "", w - R, h - 4);
@@ -96,7 +104,7 @@ class Plot {
     for (let i = 0; i < xs.length; i++) { const d = Math.abs(X(xs[i]) - px); if (d < best) { best = d; k = i; } }
     this.draw(k);
     const rows = this.series.map((s, i) => this.hidden.has(i) ? "" : `${s.name}: ${fmt(s.values[k])}`).filter(Boolean);
-    this.tip.textContent = `${this.opts.logx ? fmt(this.x[k]) + " Hz" : fmtTime(this.x[k], this.x[this.x.length - 1])}\n${rows.join("\n")}`;
+    this.tip.textContent = `${this.xText(this.x[k], this.x[this.x.length - 1], true)}\n${rows.join("\n")}`;
     this.tip.hidden = false;
     this.tip.style.left = Math.min(px + 14, r.width - 180) + "px";
     this.tip.style.top = "40px";

@@ -387,6 +387,15 @@ async def import_project(request: Request):
             return
         p.visual("brief", "import", "Imported KiCad project",
                  report={k: res[k] for k in ("notes", "errors", "warnings", "files", "counts")})
+        try:      # the project's own schematic, to read and trace nets in before WholeBoard redraws it
+            view = importer.schematic_view(p.root / "import", res["spec"], p.root / "import-schematic")
+            if view:
+                pages = [{"name": pg["name"], "title": pg["title"], "url": p.file_url(pg["svg"]), "parts": pg["parts"]}
+                         for pg in view["pages"]]
+                p.visual("brief", "svg", "The imported schematic" + (f", {len(pages)} sheets" if len(pages) > 1 else ""),
+                         url=pages[0]["url"], pages=pages if len(pages) > 1 else None, nets=p.file_url(view["nets"]))
+        except Exception as e:  # noqa: BLE001 - the import works without the picture
+            p.log("brief", f"The imported schematic could not be shown: {e}")
         p.step("brief", "done", f"{res['counts']['components']} parts, {res['counts']['nets']} nets imported")
         spec = res["spec"]
         if agent:
@@ -599,6 +608,29 @@ async def simlab_whatif(pid: str, request: Request):
         return await asyncio.to_thread(pipeline.simlab_whatif, p, values)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/projects/{pid}/simlab/antenna")
+async def simlab_antenna(pid: str, request: Request):
+    """Solve the board's antenna with openEMS, bare and in its enclosure."""
+    p = _project(pid)
+    body = await request.json() if (await request.body()) else {}
+    try:
+        # a solve takes many minutes: start it, and the result arrives with the Sim Lab's visual
+        return await asyncio.to_thread(pipeline.simlab_antenna, p, (body.get("ref") or None), True)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/projects/{pid}/antenna/measurements")
+async def antenna_measurement(pid: str, request: Request):
+    """Keep a VNA measurement of the antenna with the current revision."""
+    p = _project(pid)
+    try:
+        rows = await asyncio.to_thread(pipeline.add_antenna_measurement, p, await request.json())
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, str(e)) from e
+    return {"measurements": rows}
 
 
 @app.post("/api/projects/{pid}/simlab/video")

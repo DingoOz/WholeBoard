@@ -74,6 +74,7 @@ LIMITS = {"wall_mm": (1.2, 6), "floor_mm": (1.0, 6), "lid_mm": (1.0, 6), "gap_mm
           "corner_radius_mm": (0, 15)}
 PORT_MARGIN = 0.8       # opening margin around a connector body
 PORT_REACH = 6.0        # a connector this close to a board edge gets an opening in that wall
+ANTENNA_ROOM_MAX = 15.0  # the most a wall moves out to give an antenna room
 
 # (pattern on the lower-case footprint id, height mm, kind, extra)
 # kinds: port = side opening, led = lid window, user = lid opening (buttons, switches, pots),
@@ -218,10 +219,21 @@ def context(geo: dict, spec: dict, part_heights: dict | None = None) -> dict:
             "through_hole": f["ref"] in tht, "nearest_wall": edge, "distance_to_edge_mm": dists[edge],
             "_extra": info["extra"],
         })
+    from . import antenna
+    ants = []
+    for a in antenna.find_antennas(spec, geo):
+        if a["kind"] == "connector":
+            continue
+        r = a["antenna"]
+        ants.append({"ref": a["ref"], "antenna_mm": [round(r[0] - bx0, 2), round(r[1] - by0, 2), round(r[2] - bx0, 2),
+                                                      round(r[3] - by0, 2)],
+                     "faces": (antenna._facing_wall(a) or "").replace(" wall", "") or None,
+                     "clearance_mm": a["plastic_mm"] or antenna.GENERIC["plastic_mm"],
+                     "metal_clearance_mm": a["metal_mm"] or antenna.GENERIC["metal_mm"]})
     return {"board": {"width_mm": round(bx1 - bx0, 2), "height_mm": round(by1 - by0, 2),
                       "thickness_mm": float(board.get("thickness_mm") or 1.6),
                       "corner_radius_mm": float(board.get("corner_radius_mm") or 0)},
-            "mounting_holes": holes, "parts": parts}
+            "mounting_holes": holes, "parts": parts, **({"antennas": ants} if ants else {})}
 
 
 def public_context(ctx: dict) -> dict:
@@ -363,6 +375,27 @@ def resolve(ctx: dict, enc: dict) -> dict:
     c0y = min([0.0] + [p["courtyard_mm"][1] for p in parts]) - gap
     c1x = max([bw] + [p["courtyard_mm"][2] for p in parts]) + gap
     c1y = max([bh] + [p["courtyard_mm"][3] for p in parts]) + gap
+    # Room in front of each antenna: the wall it faces moves out to the clearance its vendor asks for (up to
+    # ANTENNA_ROOM_MAX), unless the design turns it off with "antenna_room": false.
+    if enc.get("antenna_room", True):
+        for a in ctx.get("antennas") or []:
+            r, w = a["antenna_mm"], a.get("faces")
+            if not w:
+                continue
+            have = {"left": r[0] - c0x, "right": c1x - r[2], "top": r[1] - c0y, "bottom": c1y - r[3]}[w]
+            add = min(a["clearance_mm"], ANTENNA_ROOM_MAX) - have
+            if add <= 0.05:
+                continue
+            if w == "left":
+                c0x -= add
+            elif w == "right":
+                c1x += add
+            elif w == "top":
+                c0y -= add
+            else:
+                c1y += add
+            notes.append(f"The {w} wall moved {add:.1f} mm further from {a['ref']}'s antenna, for "
+                         f"{min(a['clearance_mm'], ANTENNA_ROOM_MAX):g} mm of clearance (\"antenna_room\": false to keep it tight).")
     col_d = 0.0
     if lid["type"] == "screws":
         col_d = (insert if enc.get("fastener") == "heat_insert" else pilot_st) + 4.4
@@ -775,7 +808,7 @@ def read_stl(path: Path) -> tuple[list[float], list[int]]:
     return verts, out
 
 
-PREVIEW_COLOURS = {"base": "#c9d1d9", "lid": "#9fb4c7", "board": "#1f7a4d", "port": "#b9c0c8", "led": "#e5534b",
+PREVIEW_COLOURS = {"antenna": "#f0883e", "base": "#c9d1d9", "lid": "#9fb4c7", "board": "#1f7a4d", "port": "#b9c0c8", "led": "#e5534b",
                    "user": "#3a3f46", "header": "#2a2d31", "part": "#30343a"}
 
 
@@ -794,6 +827,9 @@ def build(geo: dict, spec: dict, enc: dict, out_dir: Path, name: str, cfg: dict 
         group = m["group"]
         meshes.append({"name": m["name"], "group": "board" if group not in ("base", "lid") else group,
                        "color": PREVIEW_COLOURS.get(m.get("kind") or group, "#30343a"), "v": v, "t": t})
+    ant = _antenna_report(geo, spec, enc, job)
+    if ant:
+        meshes += _antenna_meshes(ctx, job)
     o = job["summary"]["outer_mm"]
     preview = out_dir / f"{name}-enclosure-preview.json"
     preview.write_text(json.dumps({"size": o, "meshes": meshes}, separators=(",", ":")))
@@ -804,9 +840,48 @@ def build(geo: dict, spec: dict, enc: dict, out_dir: Path, name: str, cfg: dict 
                "freecad_notes": report.get("notes", []), "warnings": warnings,
                **({"label": report.get("label")} if job.get("label") else {}),
                "files": {k: str(v) for k, v in report["files"].items()}, "preview": str(preview)}
+    if ant:
+        summary["antenna"] = ant
     summary["print"] = print_estimate(vol, (cfg or {}).get("printing"))
     (out_dir / f"{name}-enclosure.json").write_text(json.dumps(summary, indent=1))
     return summary
+
+
+def _antenna_report(geo: dict, spec: dict, enc: dict, job: dict) -> dict | None:
+    from . import antenna
+    ants = antenna.find_antennas(spec, geo)
+    if not [a for a in ants if a["kind"] != "connector"]:
+        return None
+    bb = geo["bbox"]
+    return antenna.job_check(ants, job, (bb[0], bb[1]), bb[3] - bb[1], str(enc.get("material") or "PLA"),
+                             enc.get("fastener") == "heat_insert")
+
+
+def _box_mesh(x0: float, y0: float, z0: float, x1: float, y1: float, z1: float) -> tuple[list[float], list[int]]:
+    v = [c for x, y, z in ((x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
+                           (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)) for c in (x, y, z)]
+    t = [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7]
+    return [round(c, 3) for c in v], t
+
+
+def _antenna_meshes(ctx: dict, job: dict) -> list[dict]:
+    """Each antenna's keep-out as a see-through volume in the 3D preview (enclosure coordinates)."""
+    out = []
+    bh = ctx["board"]["height_mm"]
+    wall, b = job["wall"], job["board"]
+    c0x, c1y = wall - b["x"], b["y"] + bh - wall
+    X = lambda x: x - c0x + wall  # noqa: E731
+    Y = lambda y: c1y - y + wall  # noqa: E731
+    ow, oh = job["outer"]
+    for a in ctx.get("antennas") or []:
+        r, d = a["antenna_mm"], a["clearance_mm"]
+        x0, x1 = max(0.0, X(r[0]) - d), min(ow, X(r[2]) + d)
+        y0, y1 = max(0.0, Y(r[3]) - d), min(oh, Y(r[1]) + d)
+        z0, z1 = max(0.0, job["z_board"] - d), min(job["base_h"] + job["lid_t"], job["z_top"] + 3.2 + d)
+        v, t = _box_mesh(x0, y0, z0, x1, y1, z1)
+        out.append({"name": f"{a['ref']} antenna keep-out", "group": "antenna", "color": PREVIEW_COLOURS["antenna"],
+                    "opacity": 0.22, "v": v, "t": t})
+    return out
 
 
 MATERIALS = {"PLA": 1.24, "PETG": 1.27, "ABS": 1.04, "ASA": 1.07, "TPU": 1.21}

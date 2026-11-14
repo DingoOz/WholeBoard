@@ -332,6 +332,11 @@ def validate(spec: dict) -> Report:
     me, mw = mains.validate(spec)
     rep.errors += me
     rep.warnings += mw
+    try:
+        from . import antenna
+        rep.warnings += antenna.placement_warnings(spec)
+    except Exception:  # noqa: BLE001 - a footprint library problem is reported elsewhere
+        pass
     fine = [c["ref"] for c in spec["components"] if FINE_PITCH.search(str(c.get("footprint") or ""))]
     if fine and not b.get("fiducials") and not b.get("panel"):
         rep.warnings.append(f"{', '.join(fine[:4])} have 0.5 mm pitch or finer: set board.fiducials true (three "

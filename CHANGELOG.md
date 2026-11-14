@@ -7,6 +7,23 @@ WholeBoard has no releases yet, so changes are grouped by date.
 
 ### Added
 
+- Antenna placement checks, from each antenna vendor's own numbers (Espressif, Raytac; a labelled generic figure
+  where the vendor gives none, with the source of every figure shown): the antenna end at a board edge, no copper
+  under it, no tall or metal parts in its keep-out or in front of it, ground under the module, and the distance to
+  the enclosure's walls, lid, floor and metal screws, with a metal case flagged. The printed enclosure moves the wall
+  an antenna faces to give it room, and the 3D preview shows each keep-out. The design check warns about antenna
+  modules not fixed at a board edge, and the designer places them antenna-out.
+- Net tracing in the schematic: pick a net, label, power net, part or bus member (click it, type it, or follow a
+  link from the design check or a finding), and its wires, labels and pins are highlighted on every sheet, with a
+  minimap, arrows to places off screen, N/P to step through them, per-sheet counts and a checklist of traced nets.
+  Imported KiCad projects show their own schematic on the Request step and trace nets there too.
+- An `antenna_pi_match` block (0 Ω series part, two unfitted shunt pads) for chip antennas and antenna connectors.
+- A VNA step in the bring-up guide for boards with an antenna, and a place to enter the measured resonance and S11,
+  kept with the revision and printed in the report.
+- Antenna simulation with openEMS in the Simulation step: the antenna, ground plane, nearby metal parts and the
+  enclosure, bare and boxed, with both S11 curves and the radiation pattern (`doctor --install openems` builds a
+  small Docker image when openEMS is not installed).
+- The MCP tool `antenna_check`, and the VNA step in `bringup_guide`.
 - Publish a board to GitHub (**⋯ → Publish to GitHub…**): a new repository, private by default, with the KiCad
   project, the files for JLCPCB, renders, enclosure, firmware and a README. Publishing again adds the latest
   build as a new commit. Uses the GitHub CLI's sign-in, or a token in *Settings → GitHub*.

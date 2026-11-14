@@ -651,6 +651,28 @@ BUILTIN: list[dict] = [
                   "GND": {"desc": "Ground", "default": "GND", **POWER}},
         "nets": {"3V3": ["U1:VDD", "C1.1"], "GND": ["U1:VSS", "C1.2"]},
     },
+    {
+        "id": "antenna_pi_match", "category": "rf",
+        "title": "Antenna pi matching network (0 Ω series part, two unfitted shunt pads, 0402)",
+        "description": "Goes between a radio's 50 Ω output and a chip antenna or an antenna connector (u.FL, SMA), so "
+                       "the antenna can be re-tuned for its enclosure after a VNA measurement: R1 is a 0 Ω link that "
+                       "is swapped for an inductor or capacitor, C1 and C2 are shunt pads left unfitted until then. "
+                       "Place it right at the antenna feed, on a 50 Ω track with ground on both sides and no vias. "
+                       "Module antennas (ESP32, nRF52840 modules) are matched inside the module and need none.",
+        "components": [{"ref": "R1", "value": "0R", "footprint": "Resistor_SMD:R_0402_1005Metric", "symbol": "Device:R",
+                        "lcsc": "C17168", "description": "Series 0 Ω link (tuning position)"},
+                       {"ref": "C1", "value": "DNP", "footprint": "Capacitor_SMD:C_0402_1005Metric", "symbol": "Device:C",
+                        "dnp": True, "description": "Shunt pad on the radio side, unfitted (tuning position)"},
+                       {"ref": "C2", "value": "DNP", "footprint": "Capacitor_SMD:C_0402_1005Metric", "symbol": "Device:C",
+                        "dnp": True, "description": "Shunt pad on the antenna side, unfitted (tuning position)"}],
+        "ports": {"RF_IN": {"desc": "From the radio's 50 Ω RF output", "required": True, "pins": ["R1.1", "C1.1"]},
+                  "RF_ANT": {"desc": "To the antenna feed or the antenna connector's centre pin", "required": True,
+                             "pins": ["R1.2", "C2.1"]},
+                  "GND": {"desc": "Ground", "default": "GND", **POWER}},
+        "nets": {"GND": ["C1.2", "C2.2"]},
+        "impedance": [{"nets": ["RF_IN"], "kind": "single", "profile": "rf_50"},
+                      {"nets": ["RF_ANT"], "kind": "single", "profile": "rf_50"}],
+    },
 ]
 
 USER_DIR = config.APP_DIR / "blocks"

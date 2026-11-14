@@ -31,7 +31,52 @@ def _f(v, unit: str, digits: int = 3) -> str:
     return f"{float(v):.{digits}g} {unit}"
 
 
-def guide(spec: dict, sim_res: dict | None, budget: dict | None, fw: dict | None) -> dict:
+def _antenna_step(antennas: list[dict], boxed: bool) -> dict | None:
+    """Measure the antenna's match with a VNA, in the box and out of it."""
+    radiators = [a for a in antennas if a["kind"] != "connector"]
+    connectors = [a for a in antennas if a["kind"] == "connector"]
+    if not antennas:
+        return None
+    items, rows = [], []
+    for a in radiators or connectors:
+        lo, hi = a["band_mhz"]
+        rows.append([a["ref"], f"{lo:g}–{hi:g} MHz", "−10 dB or better", "", ""])
+    items.append("Calibrate a VNA (a NanoVNA is enough) across the band with open, short and load standards at the end of "
+                 "the cable you will connect, then sweep the return loss (S11) and note the resonance and the worst "
+                 "value inside the band.")
+    if connectors:
+        items.append("Connect the VNA through " + ", ".join(a["ref"] for a in connectors) + " (the u.FL or SMA "
+                     "connector), with the board's radio held in reset so it does not transmit into the VNA.")
+    chips = [a for a in radiators if a["kind"] == "chip"]
+    modules = [a for a in radiators if a["kind"] == "module"]
+    if chips:
+        items.append("For " + ", ".join(a["ref"] for a in chips) + ": solder a short 50 Ω pigtail (thin coax with a "
+                     "u.FL plug) at the antenna feed, the shield to the nearest ground pad, and calibrate at its end. "
+                     "Lift the series 0 Ω part so the VNA sees only the antenna side.")
+    if modules:
+        items.append("For " + ", ".join(a["ref"] for a in modules) + ": the feed is under the module's shield. "
+                     "Measure where the module brings it out (its u.FL version, or a test pad); otherwise compare "
+                     "the received signal strength (RSSI) against a known-good board at a fixed distance, in and out "
+                     "of the box.")
+    items.append(("Measure with the board fitted in its enclosure, lid closed, and again outside it. "
+                  if boxed else "Measure on the bare board, and again in its final enclosure, lid closed. ")
+                 + "Plastic close to the antenna pulls the resonance down; metal detunes it and blocks it.")
+    if chips or connectors:
+        items.append("If the resonance is off, tune the pi network (the series 0 Ω part and the two unfitted shunt "
+                     "pads): read the impedance on the Smith chart at the band centre, work out an L or C match, fit it "
+                     "and measure again.")
+    if modules:
+        items.append("A module's antenna cannot be re-tuned. If it fails, move the module so its antenna overhangs the "
+                     "board edge, give it more room in the box or a plastic window, or use the module's u.FL version "
+                     "with an external antenna.")
+    items.append("Enter the measured resonance and S11 in WholeBoard (under this guide) so the report keeps them with "
+                 "this revision.")
+    return {"title": "Antenna match (VNA)", "items": items,
+            "table": {"head": ["Antenna", "Band", "Target", "In the box", "Outside"], "rows": rows}}
+
+
+def guide(spec: dict, sim_res: dict | None, budget: dict | None, fw: dict | None,
+          antennas: list[dict] | None = None, boxed: bool = False) -> dict:
     spec = design.normalise(spec)
     sim_res = sim_res or {}
     budget = budget or {}
@@ -143,6 +188,11 @@ def guide(spec: dict, sim_res: dict | None, budget: dict | None, fw: dict | None
             "I²C: the starter firmware's scan should list every device's address. USB: the board should enumerate "
             "(lsusb / Device Manager). UART/CAN/RS-485: loop back or talk to a known-good device."]})
 
+    # 9. antennas
+    st = _antenna_step(antennas or [], boxed)
+    if st:
+        steps.append(st)
+
     md = [f"# Bring-up guide: {spec.get('name')}", "", spec.get("summary") or "", ""]
     for i, st in enumerate(steps, 1):
         md += [f"## {i}. {st['title']}", ""]
@@ -151,4 +201,5 @@ def guide(spec: dict, sim_res: dict | None, budget: dict | None, fw: dict | None
             md += ["", "| " + " | ".join(st["table"]["head"]) + " |", "|" + "---|" * len(st["table"]["head"])]
             md += ["| " + " | ".join(str(c) for c in r) + " |" for r in st["table"]["rows"]]
         md.append("")
-    return {"steps": steps, "test_points": [{"ref": r, "net": n} for n, r in tps.items()], "markdown": "\n".join(md)}
+    return {"steps": steps, "antennas": [{"ref": a["ref"], "band_mhz": a["band_mhz"], "kind": a["kind"]}
+                                         for a in antennas or []], "test_points": [{"ref": r, "net": n} for n, r in tps.items()], "markdown": "\n".join(md)}

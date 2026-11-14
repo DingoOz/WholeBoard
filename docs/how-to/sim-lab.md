@@ -35,6 +35,11 @@ The controls choose:
 
 The readout gives the inside air, the lid, wall and base temperatures and the air flowing through the vents.
 
+## Simulate the antenna
+
+Boards with an antenna get an *Antenna simulation (openEMS)* card in the Simulation step. It solves the antenna on
+the bare board and in its box and compares the return loss. See [Place an antenna and check it](antenna.md#simulate-it).
+
 ## Tour and video
 
 *Play tour* flies through the board: current, LEDs, heat, the board in its box with and without vents, each risk

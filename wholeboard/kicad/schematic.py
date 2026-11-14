@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .. import design, sexpr
 from ..sexpr import S, Sym, find, find_all, num, tag
-from . import libs
+from . import libs, schnets
 
 FORMAT_VERSION = "20260306"
 GRID = 2.54
@@ -388,8 +388,8 @@ def _label(kind: str, net: str, x: float, y: float, ang: float) -> list:
 
 
 def _symbols(out: list, items: list[dict], placed: list, name: str, inst_path: str, pin_net: dict,
-             label_kind) -> None:
-    """Append the placed symbol instances, their labels and no-connect flags."""
+             label_kind, col: schnets.Collector | None = None, sheet: int = 0, power: set[str] = frozenset()) -> None:
+    """Append the placed symbol instances, their labels and no-connect flags (and record where they are)."""
     for it, (ox, oy) in zip(items, placed):
         c, node, unit = it["c"], it["node"], it["unit"]
         x0, y0, x1, y1 = it["bbox"]
@@ -430,12 +430,20 @@ def _symbols(out: list, items: list[dict], placed: list, name: str, inst_path: s
         inst.append([Sym("instances"), [Sym("project"), name,
                      [Sym("path"), inst_path, S(Sym("reference"), ref), S(Sym("unit"), unit)]]])
         out.append(inst)
+        if col is not None:
+            col.part(ref, sheet, unit, (X + x0, Y - y1, X + x1, Y - y0), str(c.get("value") or ""))
         nc = {str(x) for x in c.get("no_connect") or []}
         for p in it["pins"]:
             px, py = X + p["x"], Y - p["y"]
             net = pin_net.get(f"{ref}.{p['number']}")
             if net:
-                out.append(_label(label_kind(net), net, px, py, (p["angle"] + 180) % 360))
+                kind, ang = label_kind(net), (p["angle"] + 180) % 360
+                out.append(_label(kind, net, px, py, ang))
+                if col is not None:
+                    a = math.radians(p["angle"])
+                    col.label(net, sheet, kind, px, py, ang, power=net in power)
+                    col.add(net, sheet, "pin", px, py, net in power, ref=ref, pin=p["number"], name=p["name"],
+                            x2=px + p["length"] * math.cos(a), y2=py - p["length"] * math.sin(a))
             elif p["number"] in nc or p["type"] != "no_connect":
                 out.append([Sym("no_connect"), S(Sym("at"), px, py), [Sym("uuid"), uid()]])
 
@@ -512,11 +520,16 @@ def build(spec: dict, out_dir: Path) -> dict:
 
     pages, notes_out = [], notes
     ports: dict[str, list[str]] = {}
+    col = schnets.Collector()
+    col.sheet("", "Main", f"{name}.kicad_sch")
+    for sh in subs:
+        col.sheet(sh["name"], sh["title"], sh["file"])
     for n, sh in enumerate(subs, start=2):
         sitems = [it for it in items if it["c"]["ref"] in set(sh["refs"])]
         placed, _, paper, pw, ph = _arrange(sitems, pin_net, power)
         body = _header(sh["uuid"], paper, pw, ph, sh["title"], list(lib_symbols.values()))
-        _symbols(body, sitems, placed, name, f"/{root_uuid}/{sh['uuid']}", pin_net, kind_for(sh["name"]))
+        _symbols(body, sitems, placed, name, f"/{root_uuid}/{sh['uuid']}", pin_net, kind_for(sh["name"]),
+                 col, n - 1, power)
         body.append(S(Sym("embedded_fonts"), Sym("no")))
         (out_dir / sh["file"]).write_text(sexpr.dumps(body) + "\n", encoding="utf-8")
         ports[sh["name"]] = sorted({net for net, ss in net_sheets.items()
@@ -529,7 +542,7 @@ def build(spec: dict, out_dir: Path) -> dict:
               _snap(max(10.16, (len(ports[sh["name"]]) + 1) * GRID))) for sh in subs]
     placed, side_pos, paper, pw, ph = _arrange(ritems, pin_net, power, sizes)
     sch = _header(root_uuid, paper, pw, ph, spec.get("summary", name) or name, list(lib_symbols.values()))
-    _symbols(sch, ritems, placed, name, f"/{root_uuid}", pin_net, kind_for(""))
+    _symbols(sch, ritems, placed, name, f"/{root_uuid}", pin_net, kind_for(""), col, 0, power)
     for sh, (w, h), (sx, sy), page in zip(subs, sizes, side_pos, pages):
         X, Y = _snap(20 + sx), _snap(20 + sy + 4)
         node = [Sym("sheet"), S(Sym("at"), X, Y), S(Sym("size"), w, h),
@@ -541,11 +554,14 @@ def build(spec: dict, out_dir: Path) -> dict:
                  [Sym("effects"), [Sym("font"), S(Sym("size"), 1.27, 1.27)], S(Sym("justify"), Sym("left"), Sym("bottom"))]],
                 [Sym("property"), "Sheetfile", sh["file"], S(Sym("at"), X, Y + h + 0.5846, 0),
                  [Sym("effects"), [Sym("font"), S(Sym("size"), 1.27, 1.27)], S(Sym("justify"), Sym("left"), Sym("top"))]]]
+        col.blocks.append({"s": 0, "sheet": sh["name"], "box": [X, Y, X + w, Y + h]})
         for k, net in enumerate(ports[sh["name"]]):
             py = Y + GRID * (k + 1)
             node.append([Sym("pin"), net, Sym("passive"), S(Sym("at"), X, py, 180), [Sym("uuid"), uid()],
                          [Sym("effects"), [Sym("font"), S(Sym("size"), 1.27, 1.27)], S(Sym("justify"), Sym("left"))]])
             sch.append(_label("label", net, X, py, 180))
+            col.label(net, 0, "label", X, py, 180)
+            col.add(net, 0, "sheet_pin", X, py, text=net, sheet=sh["name"])
         node.append([Sym("instances"), [Sym("project"), name, [Sym("path"), f"/{root_uuid}", S(Sym("page"), str(page["page"]))]]])
         sch.append(node)
     sch.append([Sym("sheet_instances"), [Sym("path"), "/", S(Sym("page"), "1")]])
@@ -555,7 +571,8 @@ def build(spec: dict, out_dir: Path) -> dict:
     extent = _extent(ritems, placed, sizes, side_pos)
     pages.insert(0, {"name": "", "title": "Main", "file": path.name, "page": 1, "extent": extent,
                      "parts": len(root["refs"])})
-    return {"sch": str(path), "paper": paper, "notes": notes_out, "extent": extent, "pages": pages}
+    return {"sch": str(path), "paper": paper, "notes": notes_out, "extent": extent, "pages": pages,
+            "nets": col.data()}
 
 
 def crop_svg(svg: Path, extent: list[float], margin: float = 6.0) -> None:

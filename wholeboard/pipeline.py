@@ -10,9 +10,9 @@ import threading
 import time
 from pathlib import Path
 
-from . import boxheat, bringup, case as stock_case, checks, config, design, enclosure, firmware, fwbuild, ibom, impedance, mains, models3d, ngspice, power, revisions, router, sim, simlab
+from . import antenna, antenna_sim, boxheat, bringup, case as stock_case, checks, config, design, enclosure, firmware, fwbuild, ibom, impedance, mains, models3d, ngspice, power, revisions, router, sim, simlab
 from .jlc import fabs as jfabs, parts as jparts, quote as jquote, savings as jsavings, suppliers as jsuppliers
-from .kicad import board, cli, geometry, handedit, libs, panelize, schematic
+from .kicad import board, cli, geometry, handedit, libs, panelize, schematic, schnets
 from .project import Project
 
 ROUTE_LOCK = threading.Lock()   # one routing job at a time (CPU heavy, one viewer port)
@@ -194,16 +194,22 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
         cli.run(["sch", "export", "svg", "--exclude-drawing-sheet", "-o", str(svg_dir), sch["sch"]],
                 cwd=rdir)
         stem = Path(sch["sch"]).stem
-        pages = []
+        pages, svgs = [], {}
         for pg in sch.get("pages") or [{"name": "", "title": "Main", "extent": sch.get("extent")}]:
             f = svg_dir / (f"{stem}-{pg['name']}.svg" if pg["name"] else f"{stem}.svg")
             if f.exists():
                 if pg.get("extent"):
                     schematic.crop_svg(f, pg["extent"])
-                pages.append({"title": pg["title"], "url": p.file_url(f), "parts": pg.get("parts")})
+                svgs[pg["name"]] = f
+                pages.append({"name": pg["name"], "title": pg["title"], "url": p.file_url(f), "parts": pg.get("parts")})
+        nets_url = None
+        if sch.get("nets") and svgs:
+            # where each net and part is on each sheet, for tracing a net in the schematic view
+            side = schnets.save(schnets.finish(sch["nets"], svgs), svg_dir / f"{stem}.nets.json")
+            nets_url = p.file_url(side)
         if pages:
             p.visual("schematic", "svg", "Schematic" + (f", {len(pages)} sheets" if len(pages) > 1 else ""),
-                     url=pages[0]["url"], pages=pages if len(pages) > 1 else None)
+                     url=pages[0]["url"], pages=pages if len(pages) > 1 else None, nets=nets_url)
         erc = None
         try:
             erc = cli.erc(Path(sch["sch"]))
@@ -399,8 +405,14 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
                     "hint": "A mains board is not finished until every spacing passes. Move the parts apart (set their "
                             "placement), keep low-voltage parts and the ground pour away from the mains side, or "
                             "use parts with wider pin spacing."}
+    ant = run_antenna_check(p, spec, final)
+    if ant and ant["antennas"]:
+        result["antenna"] = {k: ant[k] for k in ("problems", "warnings")}
     extra = f", {len(bc['problems']) + len(bc['warnings'])} board notes" if bc and (bc["problems"] or bc["warnings"]) else ""
-    p.step("drc", "warn" if bc and bc["problems"] else "done", f"clean ({drc['warnings']} warnings{extra})")
+    if ant and ant["problems"]:
+        extra += f", {len(ant['problems'])} antenna problems"
+    p.step("drc", "warn" if (bc and bc["problems"]) or (ant and ant["problems"]) else "done",
+           f"clean ({drc['warnings']} warnings{extra})")
     _check(p)
 
     # ---- 7. renders + fab outputs
@@ -465,11 +477,13 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
             result["firmware"] = {"mcu": fw["mcu"], "family": fw["family"], "pins": len(fw["pins"]),
                                   "notes": fw["notes"]}
         try:
-            bu = bringup.guide(spec, sim_res, sim_res.get("power"), fw)
+            bu = bringup.guide(spec, sim_res, sim_res.get("power"), fw, (ant or {}).get("antennas"),
+                               bool(spec["board"].get("case") or p.state.get("enclosure_spec")))
             md = rdir / f"{name}-bringup.md"
             md.write_text(bu["markdown"])
             shutil.copyfile(md, exports / f"{name}-rev{rev}-bringup.md")
             p.visual("outputs", "bringup", "Bring-up guide", steps=bu["steps"], test_points=bu["test_points"],
+                     antennas=bu["antennas"], measurements=antenna_measurements(p, rev),
                      url=p.file_url(exports / f"{name}-rev{rev}-bringup.md"), name=f"{name}-rev{rev}-bringup.md")
         except Exception as e:  # noqa: BLE001
             p.log("outputs", f"Bring-up guide not written: {e}")
@@ -509,6 +523,72 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
     else:
         p.step("enclosure", "pending", "Designed once the board is finished")
     return result
+
+
+def antenna_measurements(p: Project, rev: int | None = None) -> list[dict]:
+    """The VNA measurements the user entered, for one revision (all when rev is None)."""
+    rows = p.state.get("antenna_measurements") or []
+    return [m for m in rows if rev is None or m.get("revision") == rev]
+
+
+def add_antenna_measurement(p: Project, m: dict) -> list[dict]:
+    """Keep one measurement with the current revision, and show it under the bring-up guide."""
+    rev = int(p.state.get("revision") or 0)
+    if not rev:
+        raise ValueError("there is no finished board yet")
+    ref = str(m.get("ref") or "").strip()[:20]
+    if not ref:
+        raise ValueError("say which antenna (its reference, such as U1)")
+
+    def num(key, lo, hi):
+        v = m.get(key)
+        if v in (None, ""):
+            return None
+        v = float(v)
+        if not lo <= v <= hi:
+            raise ValueError(f"{key} should be between {lo:g} and {hi:g}")
+        return round(v, 2)
+    row = {"revision": rev, "ref": ref, "enclosed": bool(m.get("enclosed")),
+           "resonance_mhz": num("resonance_mhz", 1, 100000), "s11_db": num("s11_db", -80, 0),
+           "worst_in_band_db": num("worst_in_band_db", -80, 0), "note": str(m.get("note") or "")[:300],
+           "at": time.strftime("%Y-%m-%d %H:%M")}
+    if row["resonance_mhz"] is None and row["s11_db"] is None and row["worst_in_band_db"] is None:
+        raise ValueError("enter the resonance or an S11 value")
+    with p.lock:
+        p.state.setdefault("antenna_measurements", []).append(row)
+        vis = (p.state.get("visuals") or {}).get("outputs:bringup")
+        p.save()
+    if vis:
+        p.visual("outputs", "bringup", vis["title"], **{**{k: v for k, v in vis.items() if k != "title"},
+                                                        "measurements": antenna_measurements(p, rev)})
+    return antenna_measurements(p, rev)
+
+
+def run_antenna_check(p: Project, spec: dict, pcb: Path, enclosure_report: dict | None = None) -> dict | None:
+    """The antenna placement checks on the finished board (and its box, when there is one)."""
+    try:
+        geo = geometry.read(pcb)
+        heights = (p.state.get("enclosure_spec") or {}).get("part_heights")
+        ant = antenna.check(spec, geo, heights)
+    except Exception as e:  # noqa: BLE001 - the board is fine without the antenna notes
+        p.log("drc", f"Antenna check did not run: {e}")
+        return None
+    if not ant["antennas"]:
+        return ant
+    if enclosure_report:
+        ant["enclosure"] = enclosure_report
+    p.visual("drc", "antenna", "Antenna placement", report=ant, geo=_antenna_geo(geo))
+    for w in ant["problems"] + ant["warnings"]:
+        p.log("drc", "Antenna: " + w)
+    return ant
+
+
+def _antenna_geo(geo: dict) -> dict:
+    """Just enough of the board to draw the antennas' surroundings."""
+    from .simlab import outline_polygon
+    return {"outline": outline_polygon(geo),
+            "parts": [{"ref": f["ref"], "court": f["court"], "side": f.get("side")}
+                      for f in geo["footprints"] if f.get("court")]}
 
 
 def _part_heights(p, spec: dict, pcb: Path, download: bool) -> None:
@@ -605,6 +685,10 @@ def run_enclosure(p: Project, spec: dict, enc: dict, pcb: Path | None = None) ->
         p.state["enclosure_spec"] = enc
         p.save()
     s["thermal"] = _box_thermal(p, spec, geo, pcb, enc)
+    if s.get("antenna"):
+        run_antenna_check(p, spec, pcb, s["antenna"])
+        for w in s["antenna"]["problems"] + s["antenna"]["warnings"]:
+            p.log("enclosure", "Antenna: " + w)
     labels = {"base_stl": "base.stl", "lid_stl": "lid.stl", "base_step": "base.step", "lid_step": "lid.step",
               "freecad": "FreeCAD model"}
     files = [{"name": Path(s["files"][k]).name, "label": v, "url": p.file_url(Path(s["files"][k]))}
@@ -628,7 +712,7 @@ def run_enclosure(p: Project, spec: dict, enc: dict, pcb: Path | None = None) ->
     return {k: s[k] for k in ("ok", "collisions", "outer_mm", "inner_mm", "board_standoff_mm",
                               "board_top_to_lid_mm", "tallest_part", "board_fixing", "lid", "openings",
                               "lid_holes", "extras", "notes", "freecad_notes", "warnings", "filament_g", "print",
-                              "thermal")
+                              "thermal", "antenna")
             if k in s}
 
 
@@ -674,6 +758,8 @@ def run_case(p: Project, spec: dict, pcb: Path | None = None) -> dict:
         p.step("enclosure", "error", str(e)[:200])
         return {"ok": False, "problems": [str(e)]}
     r["thermal"] = _box_thermal(p, spec, geo, pcb, p.state.get("enclosure_spec"))
+    if r.get("antenna"):
+        run_antenna_check(p, spec, pcb, r["antenna"])
     for w in (r["thermal"] or {}).get("warnings") or []:
         p.log("enclosure", "Heat: " + w)
     files = [{"name": f["path"].name, "label": f["title"], "url": p.file_url(f["path"])} for f in r["files"]]
@@ -925,6 +1011,68 @@ def _whatif(p: Project, spec, res, rdir, checks_, box, values) -> dict:
 def simlab_whatif(p: Project, values: dict) -> dict:
     spec, geo, res, rdir, checks_ = _simlab_inputs(p)
     return _whatif(p, spec, res, rdir, checks_, _box(p, spec, geo), values)
+
+
+def antenna_box(p: Project, spec: dict, geo: dict) -> dict | None:
+    """The enclosure around the board, as the antenna simulation wants it (None without one)."""
+    bb = geo["bbox"]
+    if spec["board"].get("case"):
+        ctx = enclosure.context(geo, spec, (p.state.get("enclosure_spec") or {}).get("part_heights"))
+        c = stock_case.layout(spec, ctx)
+        return antenna_sim.box_from_case(c, (bb[0], bb[1]), str(spec["board"]["case"].get("material") or "ABS"))
+    enc = p.state.get("enclosure_spec")
+    if not enc:
+        return None
+    ctx = enclosure.context(geo, spec, enc.get("part_heights"))
+    job = enclosure.resolve(ctx, enc)
+    return antenna_sim.box_from_job(job, (bb[0], bb[1]), bb[3] - bb[1], str(enc.get("material") or "PLA"))
+
+
+def simlab_antenna(p: Project, ref: str | None = None, background: bool = False) -> dict:
+    """Solve the antenna with openEMS, bare and in its box, and show the comparison in the Sim Lab."""
+    pcb = Path((p.state.get("artifacts") or {}).get("pcb") or "")
+    if not pcb.is_file():
+        raise ValueError("there is no finished board yet")
+    spec = design.normalise(p.state["spec"])
+    geo = geometry.read(pcb)
+    if not antenna_sim.available():
+        raise ValueError("openEMS is not installed. Install it (python -m wholeboard.doctor --install openems), "
+                         "then run the antenna simulation again.")
+    model = antenna_sim.build_model(spec, geo, ref, antenna_box(p, spec, geo))
+    if not p.simlab_lock.acquire(blocking=False):
+        raise ValueError("another Sim Lab run is going; try again when it finishes")
+    if background:
+        def work():
+            try:
+                _solve_antenna(p, pcb, model)
+            except Exception as e:  # noqa: BLE001 - reported in the log; nobody waits on the thread
+                p.log("sim", f"Antenna simulation failed: {e}")
+        threading.Thread(target=work, daemon=True).start()
+        return {"started": True, "ref": model["ref"], "variants": [v["title"] for v in model["variants"]]}
+    return _solve_antenna(p, pcb, model)
+
+
+def _solve_antenna(p: Project, pcb: Path, model: dict) -> dict:
+    """Run the solver (the caller holds p.simlab_lock, which is released here) and show the result."""
+    try:
+        p.log("sim", f"Antenna simulation of {model['ref']} with openEMS: "
+                     + ", ".join(v["title"][0].lower() + v["title"][1:] for v in model["variants"]) + " (about ten minutes each)")
+        res = antenna_sim.run(model, pcb.parent / "antenna-sim", log=lambda m: p.log("sim", "openEMS: " + m),
+                              cancel=p.cancel)
+    finally:
+        p.simlab_lock.release()
+    if not res.get("ok"):
+        raise ValueError(res.get("error") or "the antenna simulation failed")
+    out = {"ref": model["ref"], "footprint": model["footprint"], "band_mhz": model["band_mhz"],
+           "antenna_length_mm": model["antenna_length_mm"], "parts_as_metal": model["parts_as_metal"],
+           "note": model["note"], "rows": res["rows"], "notes": res["notes"],
+           "variants": [{k: v[k] for k in ("name", "title", "freq_mhz", "s11_db", "resonance_mhz", "s11_min_db",
+                                           "seconds", "pattern") if k in v} for v in res["variants"]]}
+    p.visual("sim", "antennasim", f"Antenna simulation ({model['ref']}, openEMS)", result=out,
+             made=time.strftime("%Y-%m-%d %H:%M"))
+    for n in res["notes"]:
+        p.log("sim", "Antenna: " + n)
+    return out
 
 
 def save_simlab_video(p: Project, data: bytes, kind: str) -> dict:

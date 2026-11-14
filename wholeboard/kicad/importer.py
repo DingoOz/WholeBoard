@@ -231,3 +231,38 @@ def to_spec(folder: Path, name: str = "", log=print) -> dict:
 def _ref_key(ref: str):
     m = re.match(r"([A-Za-z_]+)(\d+)", ref)
     return (m.group(1), int(m.group(2))) if m else (ref, 0)
+
+
+def schematic_view(folder: Path, spec: dict, out_dir: Path) -> dict | None:
+    """The imported project's own schematic as SVGs, one per sheet, with where each net and part is on them.
+
+    Returns {"pages": [{"name", "title", "svg": Path, "parts"}], "nets": Path}, or None without a schematic."""
+    from . import schnets
+    sch = _root_schematic(folder)
+    if not sch:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # run from a folder holding both, so a kicad-cli in a container (which mounts the working folder) sees them
+    import os
+    common = Path(os.path.commonpath([sch.parent.resolve(), out_dir.resolve()]))
+    if len(common.parts) < 3:
+        common = sch.parent.resolve()
+    cli.run(["sch", "export", "svg", "--exclude-drawing-sheet", "-o", str(out_dir.resolve()), str(sch.resolve())], cwd=common)
+    pin_net = {pin: n["name"] for n in spec.get("nets") or [] for pin in n["pins"]}
+    data = schnets.read(sch, pin_net)
+    files = sorted(out_dir.glob("*.svg"))
+    pages, svgs = [], {}
+    for i, sh in enumerate(data["sheets"]):
+        want = f"{sch.stem}.svg" if not sh["name"] else f"{sch.stem}-{sh['name']}.svg"
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", sh["name"])
+        f = next((x for x in files if x.name == want), None) or next(
+            (x for x in files if sh["name"] and x.stem.endswith("-" + safe)), None)
+        if f is None or f in svgs.values():
+            continue
+        svgs[sh["name"]] = f
+        parts = {r for r, p in data["parts"].items() if any(it["s"] == i for it in p["items"])}
+        pages.append({"name": sh["name"], "title": sh["title"], "svg": f, "parts": len(parts)})
+    if not pages:
+        return None
+    side = schnets.save(schnets.finish(data, svgs), out_dir / f"{sch.stem}.nets.json")
+    return {"pages": pages, "nets": side}

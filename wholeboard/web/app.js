@@ -547,9 +547,10 @@ function renderStage() {
   const key = S.selStep;
   if (key === "summary") { stage.append(renderSummary()); return; }
   const vis = S.visuals[key] || {};
-  const order = ["import", "viewer", "live", "board", "svg", "erc", "sim", "power", "netlist", "drc", "checks", "impedance", "images", "files", "panel", "report", "bringup", "firmware", "review", "case", "enclosure", "quote"];
+  const order = ["import", "viewer", "live", "board", "svg", "erc", "sim", "power", "netlist", "drc", "checks", "impedance", "mains", "antenna", "antennasim", "images", "files", "panel", "report", "bringup", "firmware", "review", "case", "enclosure", "quote"];
   const kinds = Object.keys(vis).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   if (key === "sim" && vis.sim?.result?.ran && S.visuals.outputs?.files) kinds.unshift("simlab");
+  if (key === "sim" && S.visuals.drc?.antenna?.report?.antennas?.some(a => a.kind !== "connector") && !kinds.includes("antennasim")) kinds.push("antennasim");
   if (key === "route" && !S.liveViewer) { const i = kinds.indexOf("viewer"); if (i >= 0) kinds.splice(i, 1); }
   if (key === "place" && !placing()) { const i = kinds.indexOf("live"); if (i >= 0) kinds.splice(i, 1); }
   const extra = key === "brief" ? briefCard() : key === "parts" ? partsCard() : null;
@@ -846,6 +847,7 @@ const CHECK_HELP = {
   checks: ["Board checks", "WholeBoard works out the current in each track (from the simulation, or estimated), then how much it heats, how much voltage it loses, and how far each chip's supply pins are from a decoupling capacitor."],
   impedance: ["Controlled impedance", "Traces that need a set impedance (USB, Ethernet, fast buses) are measured: their width, length, vias and stubs, and how closely the pairs and buses match in length."],
   mains: ["Mains spacing", "Mains voltage needs wide gaps. WholeBoard measures the clearance through the air and the creepage along the board between mains copper and everything else."],
+  antenna: ["Antenna placement", "Each antenna is checked against its vendor's numbers (or a generic figure, labelled so, where the vendor gives none): its end at a board edge, no copper under it, no tall or metal parts in its keep-out or in front of it, ground plane under the rest of the module, and enough room to the enclosure's walls, lid and metal screws. Plastic close to an antenna lowers its frequency; metal detunes and blocks it. Measure the real board with a VNA to be sure."],
   case: ["Case fit", "The board is fitted into the chosen case: the parts must clear the lid, and the connectors must line up with holes in its walls."],
   heat: ["Heat in the box", "How warm the air and the parts get inside the enclosure, from the power the board uses and how much heat leaves through the walls and vents."],
   review: ["Visual review", "The AI looks at the 3D renders of the board as a reviewer would, for parts, connectors, LEDs and buttons that are missing, crowded or facing the wrong way."],
@@ -952,11 +954,14 @@ function showFinding(f) {
       d._view = new BoardView(host, geo, { marks, markColor: f.severity === "warning" || f.severity === "note" ? "#ffc83d" : "#ff4d6d" });
     }).catch(() => { host.textContent = "The board could not be loaded."; });
   }
+  const traceThen = req => el("button", { type: "button", class: "trace-from", title: "Show it in the schematic and follow it round the sheets",
+    onclick: () => { d.close(); traceInSchematic(req); } }, "Trace");
+  const canTrace = !!traceStep();
   if (parts.length) body.append(el("h5", {}, "Parts it names"), table(["Ref", "Value", "Footprint", "LCSC", "Description"],
-    parts.map(c => [el("b", {}, c.ref), c.value || "", el("span", { class: "pins" }, c.footprint),
+    parts.map(c => [el("span", {}, el("b", {}, c.ref), canTrace ? traceThen({ part: c.ref }) : ""), c.value || "", el("span", { class: "pins" }, c.footprint),
       c.lcsc ? el("a", { href: `https://jlcpcb.com/partdetail/${c.lcsc}`, target: "_blank", rel: "noopener" }, c.lcsc) : "–", el("span", { class: "muted" }, c.description || "")])));
   if (nets.length) body.append(el("h5", {}, "Nets it names"), table(["Net", "Pins"],
-    nets.slice(0, 8).map(n => [el("b", {}, n.name), el("span", { class: "pins" }, n.pins.join("  "))])));
+    nets.slice(0, 8).map(n => [el("span", {}, el("b", {}, n.name), canTrace ? traceThen({ net: n.name }) : ""), el("span", { class: "pins" }, n.pins.join("  "))])));
 
   $("#findingAsk").onclick = () => {
     d.close();
@@ -967,6 +972,31 @@ function showFinding(f) {
   };
   d.onclose = () => { d._view?.destroy(); d._view = null; };
   d.showModal();
+}
+
+// ------------------------------------------------------------------ net tracing
+// The step whose schematic can trace nets: the drawn schematic, or an imported project's own one.
+function traceStep() {
+  if (S.visuals.schematic?.svg?.nets) return "schematic";
+  if (S.visuals.brief?.svg?.nets) return "brief";
+  return null;
+}
+
+// Open the schematic and trace a net ({net}) or part ({part}) in it.
+function traceInSchematic(req) {
+  const step = traceStep();
+  if (!step) { toast("There is no schematic to trace in yet."); return; }
+  const t = SchematicTracer.current;
+  if (S.selStep === step && t?.wrap.isConnected) { t.trace(req); t.box.focus(); return; }
+  SchematicTracer.pending = req;
+  goStep(step);
+}
+
+// A net name or part reference that traces it in the schematic when clicked (plain text when there is none).
+function traceLink(req, content) {
+  if (!traceStep()) return content;
+  return el("button", { type: "button", class: "trace-link", title: `Trace ${req.net || req.part} in the schematic`,
+    onclick: () => traceInSchematic(req) }, content);
 }
 
 const RENDER = {
@@ -992,6 +1022,14 @@ const RENDER = {
     return card(v.title, frame, { fill: true, right: el("a", { href: url, target: "_blank" }, "open in new tab") });
   },
   svg(v) {
+    if (v.nets) {
+      // the schematic with net tracing: click a net or part, or type one, and follow it round the sheets
+      const host = el("div", { class: "trace-host" });
+      const open = el("a", { href: v.url, target: "_blank" }, "open SVG");
+      const c = card(v.title, host, { fill: true, right: open });
+      new SchematicTracer(host, v, { pid: S.pid, el });
+      return c;
+    }
     const box = el("div", { class: "zoomimg" });
     const img = el("img", { src: v.url, alt: v.title });
     box.append(img);
@@ -1017,11 +1055,11 @@ const RENDER = {
     if (v.errors?.length) body.append(el("b", {}, "Problems the designer must fix"), el("ul", { class: "list-err" }, findings(v.errors, "netlist", "problem")));
     if (v.warnings?.length) body.append(el("b", {}, "Notes"), el("ul", { class: "list-warn" }, findings(v.warnings, "netlist", "note")));
     body.append(el("table", {}, el("thead", {}, el("tr", {}, ["Ref", "Value", "Footprint", "LCSC", "Description"].map(h => el("th", {}, h)))),
-      el("tbody", {}, v.components.map(c => el("tr", {}, el("td", {}, el("b", {}, c.ref)), el("td", {}, c.value || ""),
+      el("tbody", {}, v.components.map(c => el("tr", {}, el("td", {}, traceLink({ part: c.ref }, el("b", {}, c.ref))), el("td", {}, c.value || ""),
         el("td", { class: "pins" }, c.footprint), el("td", {}, c.lcsc ? el("a", { href: `https://jlcpcb.com/partdetail/${c.lcsc}`, target: "_blank" }, c.lcsc) : "–"),
         el("td", { class: "muted" }, c.description || ""))))));
     body.append(el("h5", {}, `Nets (${v.nets.length})`), el("table", {}, el("tbody", {}, v.nets.map(n =>
-      el("tr", {}, el("td", {}, el("b", {}, n.name), n.class === "power" ? el("span", { class: "tag preferred", style: "margin-left:6px" }, "power") : ""),
+      el("tr", {}, el("td", {}, traceLink({ net: n.name }, el("b", {}, n.name)), n.class === "power" ? el("span", { class: "tag preferred", style: "margin-left:6px" }, "power") : ""),
         el("td", { class: "pins" }, n.pins.join("  ")))))));
     return card(v.title, body);
   },
@@ -1080,6 +1118,8 @@ const RENDER = {
     if (r.order_note) body.append(el("p", {}, el("b", {}, r.order_note)));
     return card(v.title, body);
   },
+  antenna(v) { return ANTENNA.check(v); },
+  antennasim(v) { return ANTENNA.sim(v); },
   mains(v) {
     const r = v.report, q = r.requirements || {}, body = el("div");
     if (q.working_v) body.append(el("p", {}, `${q.working_v} V working (${q.peak_v} V peak, ${q.impulse_v} V transients). ` +
@@ -1103,6 +1143,7 @@ const RENDER = {
       body.append(el("h5", {}, `${i + 1}. ${st.title}`), el("ul", { class: "checklist" }, st.items.map(x => el("li", {}, el("label", {}, el("input", { type: "checkbox" }), " ", x)))));
       if (st.table?.rows?.length) body.append(table(st.table.head, st.table.rows));
     });
+    if (v.antennas?.length) body.append(ANTENNA.measure(v));
     return card(v.title, body, { right: el("a", { href: v.url, download: v.name }, "⬇ " + v.name) });
   },
   report(v) {
@@ -1671,7 +1712,9 @@ function renderEnclosure(v) {
   frag.append(card(v.title, el("div", { class: "mesh-wrap" }, host, bar), { fill: true, right: dl }));
   fetch(v.preview).then(r => r.json()).then(data => {
     const mv = new MeshView(host, data);
-    for (const [key, label] of [["base", "Base"], ["lid", "Lid"], ["board", "Board"]]) {
+    const groups = [["base", "Base"], ["lid", "Lid"], ["board", "Board"]];
+    if (data.meshes.some(m => m.group === "antenna")) groups.push(["antenna", "Antenna keep-out"]);
+    for (const [key, label] of groups) {
       const b = el("button", { class: "chip toggle on", type: "button" }, label);
       b.addEventListener("click", () => { mv.show[key] = !mv.show[key]; b.classList.toggle("on", mv.show[key]); mv.draw(); });
       bar.append(b);

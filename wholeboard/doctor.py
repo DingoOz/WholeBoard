@@ -2,7 +2,7 @@
 
     python -m wholeboard.doctor                 # show what is installed and what is missing
     python -m wholeboard.doctor --install       # also install TraceMaker, FreeCAD, ngspice and KiCad libraries
-    python -m wholeboard.doctor --install tracemaker freecad ngspice libs platformio kikit
+    python -m wholeboard.doctor --install tracemaker freecad ngspice libs platformio kikit openems
 
 The install.sh / install.ps1 scripts install the system packages (Python, KiCad, compilers) and then
 run this. Everything installed here goes under ~/.wholeboard/tools.
@@ -239,6 +239,10 @@ def check() -> list[tuple[str, bool, str, str]]:
     kk = panelize.command()
     rows.append(("KiKit", bool(kk), ("kikit · " + ("Docker image" if kk[0] == "docker" else kk[0])) if kk else
                  "not found (optional: draws panels)", "python -m wholeboard.doctor --install kikit"))
+    from . import antenna_sim
+    em = antenna_sim.command()
+    rows.append(("openEMS", bool(em), ("openEMS · " + ("Docker image" if em[0] == "docker" else em[0])) if em else
+                 "not found (optional: simulates antennas in the Sim Lab)", "python -m wholeboard.doctor --install openems"))
     from . import fwbuild
     pio = fwbuild.find(cfg)
     pv = fwbuild.version(pio) if pio else None
@@ -257,7 +261,7 @@ def check() -> list[tuple[str, bool, str, str]]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m wholeboard.doctor", description=__doc__.split("\n")[0])
     ap.add_argument("--install", nargs="*", metavar="WHAT",
-                    help="install missing tools: tracemaker, freecad, ngspice, libs, platformio, kikit "
+                    help="install missing tools: tracemaker, freecad, ngspice, libs, platformio, kikit, openems "
                          "(default: all but platformio)")
     ap.add_argument("--force", action="store_true", help="reinstall even if found")
     args = ap.parse_args(argv)
@@ -271,7 +275,8 @@ def main(argv: list[str] | None = None) -> int:
                 ("ngspice", "ngspice", install_ngspice),
                 ("libs", "KiCad libraries", lambda log: libs.fetch_from_gitlab(log=log)),
                 ("platformio", "PlatformIO", lambda log: bool(__import__("wholeboard.fwbuild").fwbuild.install(log))),
-                ("kikit", "KiKit", lambda log: __import__("wholeboard.kicad.panelize").kicad.panelize.install(log))]
+                ("kikit", "KiKit", lambda log: __import__("wholeboard.kicad.panelize").kicad.panelize.install(log)),
+                ("openems", "openEMS", lambda log: __import__("wholeboard.antenna_sim").antenna_sim.install(log))]
         for key, label, fn in jobs:
             if key not in wanted:
                 continue
@@ -292,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {'✓' if ok else '✗'} {name.ljust(width)}  {detail}")
         if not ok:
             print(f"    {' ' * width}  fix: {fix}")
-    missing = [r[0] for r in rows if not r[1] and r[0] not in ("AI", "PlatformIO", "KiKit")]
+    missing = [r[0] for r in rows if not r[1] and r[0] not in ("AI", "PlatformIO", "KiKit", "openEMS")]
     if args.install is not None and failed:
         return 2
     return 1 if missing else 0

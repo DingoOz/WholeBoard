@@ -85,6 +85,13 @@ ground net exactly GND so the ground pour connects to it.
 (x_mm, y_mm from the board's top-left corner, rotation in degrees, locked true). Put \
 connectors at the board edge with the courtyard inside the outline. Leave everything else \
 without placement: TraceMaker places it.
+- Antennas: fix every module with an antenna (ESP32, nRF52840 modules) with a placement at a board edge, rotated so \
+its antenna end points out of the board (KiCad's RF_Module footprints have the antenna at the top, -y, so rotation 0 \
+suits the top edge, 180 the bottom edge, 90 the left edge and 270 the right edge), with the antenna area at or past \
+the edge. Keep connectors, batteries, electrolytics, displays and other tall or metal parts away from the antenna and \
+out of its path. Chip antennas and antenna connectors (u.FL, SMA) get the antenna_pi_match block between the radio \
+and the antenna, so the match can be tuned after measuring. The antenna check reports what is too close, and the \
+enclosure keeps its wall clear of the antenna.
 - Changes the user makes in KiCad to a finished board are kept: parts they moved come back as placements with \
 "from": "kicad", and nets they routed by hand as "fixed_copper" that TraceMaker routes around. Leave both as they \
 are. Only if the user asks to start the layout afresh, submit the design with "keep_kicad_edits": false.

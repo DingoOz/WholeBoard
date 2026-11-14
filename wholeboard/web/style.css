@@ -387,6 +387,56 @@ fieldset.expert legend label.inline { display:inline-flex; gap:6px; align-items:
   background: transparent; color: var(--muted); cursor: pointer; }
 .sheet-tabs button[aria-selected="true"] { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
 
+/* ---- net tracing in the schematic (nettrace.js). The schematic is always drawn light, so its marks use fixed colours. */
+.trace-host { position: absolute; inset: 0; }
+.trace-wrap:focus { outline: none; }
+.trace-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+.trace-search { width: min(220px, 40vw); padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); font-size: 13px; }
+.trace-counter { font-size: 12px; color: var(--muted); min-width: 0; }
+.trace-wrap.is-traced .trace-counter { color: var(--ok); font-weight: 600; }
+.trace-btn { border: 1px solid var(--line); background: var(--panel-2); border-radius: 6px; padding: 1px 8px; cursor: pointer; font-size: 13px; line-height: 1.6; }
+.trace-btn:hover { border-color: var(--accent); }
+.trace-view { cursor: grab; }
+.trace-view:active { cursor: grabbing; }
+.trace-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.trace-stage img { position: static; display: block; user-select: none; -webkit-user-drag: none; }
+.trace-overlay { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.trace-dim { fill: #ffffff; fill-opacity: .62; }
+.trace-hi .t-wire { stroke: #e8590c; stroke-width: .45; stroke-linecap: round; }
+.trace-hi .t-bus { stroke: #e8590c; stroke-width: .8; stroke-linecap: round; stroke-opacity: .8; }
+.trace-hi .t-pin { stroke: #e8590c; stroke-width: .4; stroke-linecap: round; }
+.trace-hi .t-dot { fill: #e8590c; }
+.trace-hi .t-label { fill: #e8590c; fill-opacity: .22; stroke: #e8590c; stroke-width: .25; }
+.trace-hi .t-part { fill: #e8590c; fill-opacity: .08; stroke: #e8590c; stroke-width: .35; }
+.trace-hi .t-current { fill: none; stroke: #1c7ed6; stroke-width: .5; animation: tracePulse 1.4s ease-in-out infinite; }
+@keyframes tracePulse { 50% { stroke-opacity: .25; } }
+.trace-arrows { position: absolute; inset: 0; pointer-events: none; }
+.trace-arrow { position: absolute; pointer-events: auto; width: 26px; height: 26px; border-radius: 50%; border: 0; padding: 0;
+  background: #e8590c; color: #fff; font-size: 13px; line-height: 26px; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+.trace-arrow.seen { background: #2f9e44; }
+.trace-arrow:focus-visible { outline: 2px solid #1c7ed6; }
+.trace-mini { position: absolute; right: 10px; bottom: 10px; background: #fff; border: 1px solid #c9cfc9; border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.18); overflow: hidden; cursor: crosshair; touch-action: none; }
+.trace-mini img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; opacity: .7; pointer-events: none; }
+.trace-mini-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.trace-mini-dot { fill: #e8590c; stroke: #fff; stroke-width: .25; }
+.trace-mini-dot.seen { fill: #2f9e44; }
+.trace-mini-dot.cur { fill: #1c7ed6; }
+.trace-mini-view { fill: rgba(28,126,214,.08); stroke: #1c7ed6; }
+.trace-panel { position: absolute; left: 10px; top: 10px; bottom: 10px; width: min(260px, 70%); overflow: auto; padding: 8px 10px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); cursor: default; }
+.trace-panel-head { display: flex; justify-content: space-between; align-items: center; }
+.trace-panel p { margin: 4px 0 8px; font-size: 12px; }
+.trace-panel ul { list-style: none; margin: 0; padding: 0; }
+.trace-panel li { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+.trace-panel li.on .trace-link { color: var(--accent); font-weight: 600; }
+.trace-link { border: 0; background: none; padding: 0; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.trace-link:hover, .trace-link:focus-visible { color: var(--accent); text-decoration: underline; }
+.trace-link.power { color: var(--warn); }
+.trace-from { margin-left: 8px; font-size: 11px; padding: 0 7px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); cursor: pointer; }
+.trace-from:hover { border-color: var(--accent); }
+.sheet-tabs .trace-count:not(:empty) { margin-left: 6px; padding: 0 6px; border-radius: 8px; background: #e8590c; color: #fff; font-size: 11px; }
+
 /* ---- keyboard focus, motion, skip link */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .stepper li:focus-visible { outline-offset: -2px; }
@@ -508,3 +558,30 @@ kbd { font: 12px var(--mono); padding: 1px 6px; border: 1px solid var(--line); b
 .pub-readme { margin: 6px 0 0; max-height: 260px; overflow: auto; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
   font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 #pubVis { gap: 16px; }
+
+/* antennas */
+.ant h5 { margin: 16px 0 6px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.ant-plan-wrap { max-width: 520px; margin: 6px 0 10px; }
+.ant-plan { width: 100%; height: auto; background: var(--board-bg); border-radius: 6px; }
+.ant-board { fill: var(--board-mask); stroke: var(--accent-2); stroke-width: .3; }
+.ant-part { fill: none; stroke: #c9d1d9; stroke-width: .2; opacity: .7; }
+.ant-part.self { stroke-width: .35; opacity: 1; }
+.ant-label { fill: #c9d1d9; font-size: 1.6px; text-anchor: middle; dominant-baseline: middle; font-family: var(--mono); }
+.ant-keepout { fill: none; stroke: #f0883e; stroke-width: .3; stroke-dasharray: 1 .8; }
+.ant-area { fill: #f0883e; fill-opacity: .45; stroke: #f0883e; stroke-width: .3; }
+.ant-hit { fill-opacity: .25; stroke-width: .4; }
+.ant-hit.problem { fill: var(--danger); stroke: var(--danger); }
+.ant-hit.warning { fill: var(--warn); stroke: var(--warn); }
+.ant-arrow { stroke: #f0883e; stroke-width: .5; }
+.ant-legend { fill: #c9d1d9; font-size: 1.8px; }
+.ant-polar { display: flex; flex-wrap: wrap; gap: 16px; }
+.ant-polar-svg { width: 240px; max-width: 100%; height: auto; }
+.ant-ring { fill: none; stroke: var(--line); stroke-width: .4; }
+.ant-ring-label { fill: var(--muted); font-size: 4px; }
+.ant-lobe { fill: var(--info); fill-opacity: .25; stroke: var(--info); stroke-width: .7; }
+.ant-polar-title { fill: var(--text); font-size: 5px; text-anchor: middle; }
+.ant-measure { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.ant-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+.ant-form .num { width: 6.5em; }
+.ant-form input[type=text] { flex: 1 1 12em; }
+span.bad { color: var(--danger); font-weight: 600; }

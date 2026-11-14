@@ -6,8 +6,10 @@ Short recipes for one job each.
 - [Start WholeBoard](start.md), including from another computer
 - [Import a KiCad project](import-kicad.md)
 - [Edit the board in KiCad](kicad-edits.md) and keep your changes
+- [Trace a net through the schematic](trace-nets.md), sheet by sheet
 - [Exchange designs with Altium](altium.md)
 - [Explore the simulation in the Sim Lab](sim-lab.md)
+- [Place an antenna and check it](antenna.md): vendor keep-outs, the box, a VNA measurement and openEMS
 - [Design the enclosure](enclosure.md)
 - [Fit a board to a case](case-fit.md): a DXF outline, or a box you already have
 - [Make a panel](panels.md)

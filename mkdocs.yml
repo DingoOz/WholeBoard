@@ -99,8 +99,10 @@ nav:
       - Start WholeBoard: how-to/start.md
       - Import a KiCad project: how-to/import-kicad.md
       - Edit the board in KiCad: how-to/kicad-edits.md
+      - Trace a net through the schematic: how-to/trace-nets.md
       - Exchange designs with Altium: how-to/altium.md
       - Explore the simulation in the Sim Lab: how-to/sim-lab.md
+      - Place an antenna and check it: how-to/antenna.md
       - Design the enclosure: how-to/enclosure.md
       - Fit a board to a case: how-to/case-fit.md
       - Make a panel: how-to/panels.md

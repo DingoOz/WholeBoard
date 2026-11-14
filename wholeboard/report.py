@@ -166,6 +166,32 @@ def generate(p: Project) -> Path:
         story += [Paragraph("Board checks", h2)] + [Paragraph("• " + esc(n), body)
                                                     for n in checks["problems"] + checks["warnings"]]
 
+    ant = (vis.get("drc:antenna") or {}).get("report") or {}
+    meas = [m for m in st.get("antenna_measurements") or [] if m.get("revision") == rev]
+    asim = (vis.get("sim:antennasim") or {}).get("result")
+    if ant.get("antennas") or meas:
+        story.append(Paragraph("Antennas", h2))
+        for a in ant.get("antennas") or []:
+            lo, hi = a["band_mhz"]
+            story.append(Paragraph(esc(f"{a['ref']} ({a['footprint']}), {lo:g}–{hi:g} MHz"
+                                       + (f"; antenna end {a['edge_mm']:g} mm from the board edge" if a.get("edge_mm") is not None else "")), body))
+        enc_ant = ant.get("enclosure") or {}
+        for n in ant.get("problems", []) + ant.get("warnings", []) + enc_ant.get("problems", []) + enc_ant.get("warnings", []):
+            story.append(Paragraph("• " + esc(n), body))
+        if asim:
+            story.append(Paragraph(esc("Simulated with openEMS (a generic inverted-F in place of the real antenna; "
+                                       "compare the rows, not the absolute values):"), body))
+            story.append(table(["", "Resonance", "Best S11", "Worst in band"],
+                               [[r["variant"], f"{r['resonance_mhz']:g} MHz", f"{r['s11_min_db']:g} dB",
+                                 "–" if r["worst_in_band_db"] is None else f"{r['worst_in_band_db']:g} dB"] for r in asim["rows"]]))
+        if meas:
+            story.append(Paragraph("Measured with a VNA:", body))
+            story.append(table(["Antenna", "Where", "Resonance", "Best S11", "Worst in band", "Note", "When"],
+                               [[m["ref"], "in the box" if m["enclosed"] else "outside",
+                                 *(("–" if m[k] is None else f"{m[k]:g} {u}") for k, u in
+                                   (("resonance_mhz", "MHz"), ("s11_db", "dB"), ("worst_in_band_db", "dB"))),
+                                 m.get("note") or "", m["at"]] for m in meas]))
+
     enc = (vis.get("enclosure:enclosure") or {}).get("summary")
     case = (vis.get("enclosure:case") or {}).get("result")
     if enc or case:

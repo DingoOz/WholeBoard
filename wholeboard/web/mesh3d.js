@@ -7,7 +7,7 @@ class MeshView {
     this.host = host;
     this.data = data;
     this.yaw = -0.7; this.pitch = 0.75; this.zoom = 1; this.explode = 0.6;
-    this.show = { base: true, lid: true, board: true };
+    this.show = { base: true, lid: true, board: true, antenna: true };
     this.canvas = document.createElement("canvas");
     this.canvas.className = "mesh-canvas";
     host.append(this.canvas);
@@ -15,7 +15,8 @@ class MeshView {
     const [sx, sy, sz] = data.size;
     this.center = [sx / 2, sy / 2, sz / 2];
     this.radius = Math.hypot(sx, sy, sz) / 2;
-    this.meshes = data.meshes.map(m => this._prep(m));
+    // see-through meshes (an antenna keep-out) are drawn last, over what is behind them
+    this.meshes = data.meshes.map(m => this._prep(m)).sort((a, b) => (a.opacity < 1) - (b.opacity < 1));
     this._bind();
     this.ro = new ResizeObserver(() => this._resize());
     this.ro.observe(host);
@@ -38,7 +39,7 @@ class MeshView {
     }
     const hex = m.color.replace("#", "");
     const rgb = [0, 2, 4].map(k => parseInt(hex.slice(k, k + 2), 16));
-    return { ...m, v, t, n, normals, rgb };
+    return { ...m, v, t, n, normals, rgb, opacity: m.opacity == null ? 1 : +m.opacity };
   }
 
   _resize() {
@@ -107,11 +108,11 @@ class MeshView {
         const nx = m.normals[3 * i], ny = m.normals[3 * i + 1], nz = m.normals[3 * i + 2];
         const nx1 = nx * cy - ny * sy, ny1 = nx * sy + ny * cy;
         const nsy = ny1 * sp + nz * cp, nd = -ny1 * cp + nz * sp;
-        if (nd < -1e-3) continue;                           // facing away
+        if (nd < -1e-3 && m.opacity >= 1) continue;          // facing away (see-through meshes show both sides)
         const lit = 0.35 + 0.65 * Math.max(0, nx1 * L[0] + nsy * L[1] + nd * L[2]);
         const col = (255 << 24) | ((m.rgb[2] * lit | 0) << 16) | ((m.rgb[1] * lit | 0) << 8) | (m.rgb[0] * lit | 0);
         const a = m.t[3 * i] * 3, b = m.t[3 * i + 1] * 3, cc = m.t[3 * i + 2] * 3;
-        tri(P[a], P[a + 1], P[a + 2], P[b], P[b + 1], P[b + 2], P[cc], P[cc + 1], P[cc + 2], col, px, zb, W, H);
+        tri(P[a], P[a + 1], P[a + 2], P[b], P[b + 1], P[b + 2], P[cc], P[cc + 1], P[cc + 2], col, px, zb, W, H, m.opacity);
       }
     }
     this.offCtx.putImageData(this.img, 0, 0);
@@ -121,7 +122,7 @@ class MeshView {
   }
 }
 
-function tri(x0, y0, z0, x1, y1, z1, x2, y2, z2, col, px, zb, W, H) {
+function tri(x0, y0, z0, x1, y1, z1, x2, y2, z2, col, px, zb, W, H, alpha = 1) {
   const area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
   if (Math.abs(area) < 1e-9) return;
   const minX = Math.max(0, Math.floor(Math.min(x0, x1, x2))), maxX = Math.min(W - 1, Math.ceil(Math.max(x0, x1, x2)));
@@ -138,7 +139,11 @@ function tri(x0, y0, z0, x1, y1, z1, x2, y2, z2, col, px, zb, W, H) {
       const w2 = 1 - w0 - w1;
       if (w2 < -1e-6) continue;
       const z = w0 * z0 + w1 * z1 + w2 * z2, k = y * W + x;
-      if (z > zb[k]) { zb[k] = z; px[k] = col; }
+      if (z <= zb[k]) continue;
+      if (alpha >= 1) { zb[k] = z; px[k] = col; continue; }
+      const o = px[k], ia = 1 - alpha;                  // blend over what is there; leave the depth for solids
+      px[k] = (255 << 24) | (((((col >> 16) & 255) * alpha + ((o >> 16) & 255) * ia) | 0) << 16)
+        | (((((col >> 8) & 255) * alpha + ((o >> 8) & 255) * ia) | 0) << 8) | (((col & 255) * alpha + (o & 255) * ia) | 0);
     }
   }
 }

@@ -346,3 +346,18 @@ Workaround: leave the antenna off the board. Lunchbox Logger rev5 cuts a notch i
 so no later step moves them. Checked with KiCad: Lunchbox Logger rev4 with the moved keep-out fails DRC with six
 `items_not_allowed` (the ESPC_EN and ESPC_BOOT tracks under the antenna). `tests/test_more.py` covers 0, 90 and 180
 degrees and the bottom side. Boards built before this keep the wrong keep-out until rebuilt.
+
+## 27. A part's height from its KiCad STEP model can be hundreds of metres
+
+`wholeboard/models3d.py`, `step_bbox`: the bounding box is taken over every `CARTESIAN_POINT` in the STEP file. Those
+include the origins of axis placements and the control points of the surfaces, which can sit far outside the solid,
+so the box (and the height from `model_height`) can be wildly wrong.
+
+Seen: Lunchbox Logger (board 20261031-010553-b035) rev9, enclosure rebuilt on 2026-11-14 in a scratch copy. SW3
+(`Button_Switch_SMD:SW_SPDT_Shouhan_MSK12C02`) gets a bbox of `[-3.9, -291598.46, -0.5, 3.9, 2.85, 400000.8]` from
+`SW_SPDT_Shouhan_MSK12C02.step`, so the enclosure job has a 400000.8 mm tall block for it and the 3D preview draws a
+black bar through the lid. The original build of rev9 (before that model was installed) used EasyEDA's 1.5 mm.
+
+Fix: take the box over the points the faces actually use (vertex points, or the points of the edge curves), or drop
+outliers far from the rest, and sanity-check the height against the footprint's courtyard and the EasyEDA height.
+Workaround: set the part's height in the enclosure's `part_heights`.
