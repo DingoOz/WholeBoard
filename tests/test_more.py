@@ -591,3 +591,25 @@ def test_pads_of_one_footprint_closer_than_the_clearance():
     found = gaps(0.15)
     assert len(found) == 1 and "pads 3 and 4" in found[0] and "0.140 mm" in found[0] and "to 0.14 or less" in found[0]
     assert not gaps(0.14)
+
+
+def test_a_tool_killed_by_its_timer_says_it_timed_out():
+    """Issue #9: a run stopped by the time limit returns TIMED_OUT, not the kill's exit code (-9)."""
+    import sys
+    from wholeboard import router
+    code = router._stream([sys.executable, "-c", "import time; time.sleep(30)"], lambda s: None, None, timeout=0.3)
+    assert code == router.TIMED_OUT
+    assert router._ended(code, 300) == "timed out after 300 s"
+    assert router._ended(-9, 300) == "exit code -9"          # a real kill from elsewhere still says so
+
+
+def test_a_placement_timeout_is_logged_as_a_timeout(tmp_path, monkeypatch):
+    """Issue #9: the routable pass overrunning its limit reads as a timeout in the log and the error."""
+    from wholeboard import router
+    monkeypatch.setattr(router, "find", lambda name, cfg=None: "/bin/tracemaker-place")
+    monkeypatch.setattr(router, "_stream", lambda cmd, log, cancel, timeout: router.TIMED_OUT)
+    monkeypatch.setattr(router, "_copy_project", lambda a, b: None)
+    logs = []
+    with pytest.raises(RuntimeError, match=r"timed out after 180 s"):
+        router.place(tmp_path / "in.kicad_pcb", tmp_path / "out.kicad_pcb", log=logs.append, seconds=10)
+    assert "did not finish (timed out after 150 s)" in logs[0] and "exit code" not in logs[0]
