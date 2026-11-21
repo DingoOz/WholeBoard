@@ -112,6 +112,11 @@ routes the same way), and the log says up front how long the retry may take. Als
 connections, the first result was kept but its board had been overwritten by the retry's; the first board is now
 restored. Still open: a retry that keeps the routed board and rips up only round the failures (TraceMaker, see 18).
 
+**More fixed 2026-11-22** (issue #11): the route step says before the first run that a second one may follow and how
+long it can take. The retry, and the ECO pass before it, are skipped when the router used up its time before trying
+most of the open connections (`not_attempted` in the stuck report): the same limit would stop the same way, so the log
+says to raise `route_time_s` instead. The route-and-retry logic moved to `pipeline._route_board`, with tests.
+
 ## 9. (Feature gap) `find_passive` can't filter by voltage rating
 
 `find_passive` rejects values like `100nF 100V` or `1nF 2kV`. PoE and 54 V designs need voltage-rated

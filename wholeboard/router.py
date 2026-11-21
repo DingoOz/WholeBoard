@@ -244,6 +244,7 @@ def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | 
         if token:
             args += ["--view-host", "0.0.0.0", "--view-token", token]
     _copy_project(pcb_in, pcb_out)
+    stuck.unlink(missing_ok=True)       # a report left by an earlier run on this board is not this run's
     code = _stream(_cmd(exe, ["route", *args], cfg), log, cancel, timeout=t * 10 + 300)
     if not pcb_out.exists():
         raise RuntimeError(f"tracemaker route wrote no board ({_ended(code, t * 10 + 300)})")
@@ -253,6 +254,7 @@ def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | 
     # not connected: KiCad's DRC reports it, so it counts as open
     refill_open = int(data.get("unconnected_after_refill") or (data.get("refill") or {}).get("unconnected") or 0)
     return {
+        "not_attempted": _not_attempted(stuck),
         "routed": data.get("routed"), "connections": data.get("connections"),
         "tracks": data.get("tracks"), "vias": (data.get("style") or {}).get("vias"),
         "seconds": data.get("seconds"), "variant": data.get("variant_name"),
@@ -260,6 +262,15 @@ def route(pcb_in: Path, pcb_out: Path, log=print, cancel=None, seconds: float | 
         "complete": data.get("routed") is not None and data.get("routed") == data.get("connections") and not refill_open,
         "failures": failures[:30],
     }
+
+
+def _not_attempted(stuck: Path) -> int:
+    """How many open connections the stuck report says the run ended before trying (reason not_attempted)."""
+    try:
+        rows = json.loads(stuck.read_text()).get("unrouted_by_reason") or []
+        return sum(int(r.get("count") or 0) for r in rows if r.get("name") == "not_attempted")
+    except (OSError, ValueError, AttributeError, TypeError):
+        return 0
 
 
 def _copy_project(pcb_in: Path, pcb_out: Path) -> None:

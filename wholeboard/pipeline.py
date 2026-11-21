@@ -52,6 +52,56 @@ def _route_score(rr: dict) -> tuple[int, int]:
     return (rr.get("routed") or 0), -(rr.get("refill_open") or 0)
 
 
+def _out_of_time(rr: dict, limit: float) -> bool:
+    """Did the router use up its time before trying most of the open connections? Routing again with the same
+    limit would stop the same way, so a second run only doubles the build time."""
+    left = (rr.get("connections") or 0) - (rr.get("routed") or 0)
+    if left <= 0 or 2 * (rr.get("not_attempted") or 0) <= left:
+        return False
+    return rr.get("seconds") is None or rr["seconds"] >= 0.9 * limit
+
+
+def _route_board(p: Project, cfg: dict, spec: dict, placed: Path, routed: Path, eco: Path,
+                 port: int | None, view_origin: str | None, pours: list[str]) -> dict:
+    """Route the placed board into routed. When connections are left open, nudge the placement (an ECO pass) and
+    route once more, unless that cannot help. Returns the better route's result; its board is at routed."""
+    limit = cfg["tools"].get("route_time_s", 120)
+    log = lambda s: p.log("route", s)  # noqa: E731
+
+    def route(src: Path, reroute: bool = False) -> dict:
+        return router.route(src, routed, log=log, cancel=p.cancel, view_port=port, embed_origin=view_origin,
+                            reroute=reroute, diff_pairs=impedance.has_pairs(spec), pours=pours)
+    log(f"Routing for up to {limit:g} s. If connections are left open, the placement is nudged and the board "
+        f"routed once more, which can take up to {limit:g} s more.")
+    rr = route(placed)
+    if rr["complete"] or p.cancel.is_set() or (not pours and _left_to_pour(rr, spec)):
+        return rr
+    if _out_of_time(rr, limit):
+        left = rr["connections"] - rr["routed"]
+        log(f"The router ran out of time before trying {rr['not_attempted']} of the {left} open connections, so "
+            f"routing again with the same {limit:g} s would stop the same way; keeping the first route. Give the "
+            "router more time (route_time_s in Settings) and build again.")
+        return rr
+    log(("Not every connection routed" if rr["routed"] != rr["connections"] else
+         f"{rr['refill_open']} connections were cut off when the planes were refilled")
+        + "; nudging the placement to route again.")
+    router.place(routed, eco, log=log, cancel=p.cancel, mode="eco", scratch=False)
+    if _same_placement(routed, eco):
+        # the same placement routes the same way: a second full run would only cost the time again
+        log("The nudge moved no parts, so routing again would give the same result; keeping the first route.")
+        return rr
+    if pours:
+        board.drop_pours(eco)      # poured again for the new copper, not routed against the old fill
+    log(f"Routing again from the nudged placement (up to {limit:g} s more).")
+    first = routed.with_name(routed.stem + "-first.kicad_pcb")
+    shutil.copyfile(routed, first)
+    rr2 = route(eco, reroute=True)
+    if _route_score(rr2) >= _route_score(rr):
+        return rr2
+    shutil.copyfile(first, routed)  # the first route was better: put it back
+    return rr
+
+
 def _board_visual(p: Project, step: str, pcb: Path, title: str) -> dict:
     geo = geometry.read(pcb)
     out = pcb.parent / f"{pcb.stem}.geo.json"
@@ -295,34 +345,8 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
                      port=port, token=router.viewer_token(), live=True)
         p.step("route", "running", "TraceMaker is routing")
         try:
-            rr = router.route(placed, routed, log=lambda s: p.log("route", s), cancel=p.cancel,
-                              view_port=port, embed_origin=view_origin, diff_pairs=impedance.has_pairs(spec),
-                              pours=pours)
-            if not rr["complete"] and not p.cancel.is_set() and (pours or not _left_to_pour(rr, spec)):
-                p.log("route", ("Not every connection routed" if rr["routed"] != rr["connections"] else
-                                f"{rr['refill_open']} connections were cut off when the planes were refilled")
-                      + "; nudging the placement to route again.")
-                eco = rdir / f"{name}-2b-eco.kicad_pcb"
-                router.place(routed, eco, log=lambda s: p.log("route", s), cancel=p.cancel,
-                             mode="eco", scratch=False)
-                if _same_placement(routed, eco):
-                    # the same placement routes the same way: a second full run would only cost the time again
-                    p.log("route", "The nudge moved no parts, so routing again would give the same result; "
-                                   "keeping the first route.")
-                else:
-                    if pours:
-                        board.drop_pours(eco)      # poured again for the new copper, not routed against the old fill
-                    p.log("route", f"Routing again from the nudged placement (up to "
-                                   f"{cfg['tools'].get('route_time_s', 120):g} s more).")
-                    first = routed.with_name(routed.stem + "-first.kicad_pcb")
-                    shutil.copyfile(routed, first)
-                    rr2 = router.route(eco, routed, log=lambda s: p.log("route", s), cancel=p.cancel,
-                                       view_port=port, embed_origin=view_origin, reroute=True,
-                                       diff_pairs=impedance.has_pairs(spec), pours=pours)
-                    if _route_score(rr2) >= _route_score(rr):
-                        rr = rr2
-                    else:                  # the first route was better: put it back
-                        shutil.copyfile(first, routed)
+            rr = _route_board(p, cfg, spec, placed, routed, rdir / f"{name}-2b-eco.kicad_pcb",
+                              port, view_origin, pours)
         except Exception as e:  # noqa: BLE001
             p.step("route", "error", str(e))
             return {**result, "ok": False, "stage": "routing", "errors": [str(e)]}
