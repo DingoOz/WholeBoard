@@ -843,7 +843,7 @@ const CHECK_HELP = {
   netlist: ["Design check", "Before anything is drawn, WholeBoard checks the design: each footprint exists and its pads match the symbol's pins, each net joins at least two pins, and each part is in stock at JLCPCB."],
   erc: ["Electrical rules check", "KiCad reads the schematic for outputs driving each other, inputs left floating, power pins with nothing to power them and wires that go nowhere."],
   drc: ["Design rule check", "KiCad measures the finished board against JLCPCB's limits: copper spacing, track widths, hole sizes, the board edge and the silkscreen."],
-  checks: ["Board checks", "WholeBoard works out the current in each track (from the simulation, or estimated), then how much it heats, how much voltage it loses, and how far each chip's supply pins are from a decoupling capacitor."],
+  checks: ["Board checks", "WholeBoard works out the current in each track (from the simulation, or estimated), then how much it heats, how much voltage it loses, how far each chip's supply pins are from a decoupling capacitor, and how big each switching regulator's input loop is."],
   impedance: ["Controlled impedance", "Traces that need a set impedance (USB, Ethernet, fast buses) are measured: their width, length, vias and stubs, and how closely the pairs and buses match in length."],
   mains: ["Mains spacing", "Mains voltage needs wide gaps. WholeBoard measures the clearance through the air and the creepage along the board between mains copper and everything else."],
   case: ["Case fit", "The board is fitted into the chosen case: the parts must clear the lid, and the connectors must line up with holes in its walls."],
@@ -1077,6 +1077,9 @@ const RENDER = {
         g.skew_mm != null ? el("p", {}, `Length difference ${g.skew_mm} mm (limit ${g.max_skew_mm} mm)`) : "",
         g.match_mm != null ? el("p", {}, `Longest minus shortest ${g.match_mm} mm` + (g.max_match_mm != null ? ` (limit ${g.max_match_mm} mm)` : "")) : "");
     }
+    if (r.spacing?.length) body.append(el("h5", {}, "Signals running too close (3W rule)"),
+      table(["Net", "Beside", "Layer", "Parallel run", "Closest", "Wanted"], r.spacing.map(s => [el("b", {}, s.net), s.other, s.layer,
+        `${s.parallel_mm} mm`, `${s.closest_mm} mm`, `${s.needs_mm} mm`])));
     if (r.order_note) body.append(el("p", {}, el("b", {}, r.order_note)));
     return card(v.title, body);
   },
@@ -1168,6 +1171,10 @@ const RENDER = {
     if (r.decoupling.length) body.append(el("h5", {}, "Decoupling capacitors"),
       table(["IC pin", "Net", "Nearest cap", "Distance"], r.decoupling.map(d => [`${d.ref}.${d.pad} ${d.pin !== d.pad ? d.pin : ""}`, d.net,
         d.cap || "none", d.distance_mm != null ? `${d.distance_mm} mm` : "–"])));
+    if (r.hot_loops?.length) body.append(el("h5", {}, "Converter input loops"),
+      table(["Converter", "Loop", "Area", "Inductance (rough)"], r.hot_loops.map(h => [el("b", {}, h.ref),
+        h.cap ? `${h.vin} → ${h.cap} → ${h.ground}` : "no input capacitor",
+        h.area_mm2 != null ? `${h.area_mm2} mm² (limit ${h.limit_mm2})` : "–", h.loop_nh != null ? `${h.loop_nh} nH` : "–"])));
     return card(v.title, body);
   },
   review(v) {

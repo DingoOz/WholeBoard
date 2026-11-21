@@ -225,6 +225,15 @@ Ideas, cheapest first:
 Not proposed: field-solver signal- or power-integrity simulation (openEMS and the like). It is slow, needs IBIS
 models that JLCPCB parts rarely have, and is hard to run unattended; boards that need it belong in a dedicated tool.
 
+**Partly done 2026-11-22** (issue #14): two of the ideas. *Converter hot loop*: `checks.run` measures each buck
+converter's input loop (its VIN pads, the input capacitor between VIN and ground that makes the smallest loop, its GND
+pads), reports the area and a rough inductance under `hot_loops`, and warns above `rules.hot_loop_mm2` (20 mm²). Boosts
+are left out (their hot loop is on the output). *High-speed spacing*: `impedance.check` reports `spacing`, the other
+signal tracks that run beside a controlled net on the same layer closer than `spacing_w` (3) of its track widths,
+centre to centre, for more than `max_parallel_mm` (5 mm); ground, power and a pair's own halves don't count. *Bus
+length matching* was already there (`"kind": "bus"` with `max_match_mm`). Still open: post-layout re-simulation and the
+return-path check (it needs TraceMaker's plane voids, DingoOz/TraceMaker#24).
+
 ## 17. Placement packs a large chip's decoupling caps onto one side, across its signal escapes
 
 On the PoE switch, `tracemaker-place` put all 27 of each KSZ9897's 100 nF caps in a cluster beside the chip's

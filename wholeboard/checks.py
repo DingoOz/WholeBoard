@@ -5,6 +5,9 @@
   (rules.trace_heating), and both are reported for comparison.
 - Voltage drop: the copper resistance of a power net's tracks between its farthest pads.
 - Decoupling: every IC supply pin should have a small capacitor on the same net close by.
+- Converter hot loop: a buck converter's input current switches round the loop from its VIN pin through the input
+  capacitor to its GND pin. The loop's area (and a rough inductance) is warned above rules.hot_loop_mm2 (20 mm²):
+  that loop's inductance rings at every switching edge, so datasheets put the input capacitor at the pins.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ MIL = 0.0254              # mm
 
 
 METHODS = ("ipc2152", "ipc2221")
+HOT_LOOP_MM2 = 20.0       # default rules.hot_loop_mm2
 
 
 def _area_2152(current_a: float, rise_c: float) -> float:
@@ -109,6 +113,58 @@ def _graph_drop(tracks: list[dict], pads: list[dict], current_a: float) -> tuple
     return worst, worst_len
 
 
+def _loop_area(pts: list[tuple[float, float]]) -> float:
+    """Area (mm²) of the loop through the points in order (the shoelace formula)."""
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]))) / 2
+
+
+def loop_inductance_nh(area_mm2: float, wire_radius_mm: float = 0.1) -> float:
+    """Rough inductance (nH) of a loop of this area: a circular loop of thin wire, in free space. A plane right
+    under the loop lowers it; it is for comparing layouts, not a figure to design to."""
+    r = math.sqrt(max(area_mm2, 0) / math.pi)
+    if r <= wire_radius_mm:
+        return 0.0
+    return max(4e-7 * math.pi * (r / 1000) * (math.log(8 * r / wire_radius_mm) - 2), 0.0) * 1e9
+
+
+def _hot_loop(part, ground: str | None, pads: list[dict]) -> dict | None:
+    """A buck converter's input loop: its VIN pin, the input capacitor that makes the smallest loop, its GND pin.
+    None for a part whose input or ground pins can't be found, and for a boost (its inductor runs from the input
+    to the switch node, so its hot loop is on the output side)."""
+    vi = part.pad_named("VIN", "VI", "IN", "VCC", "PVIN")
+    vin = part.pads.get(vi) if vi else None
+    if not vin or not ground:
+        return None
+    nets_of: dict[str, set] = {}
+    for p in pads:
+        nets_of.setdefault(p["ref"], set()).add(p["net"])
+    sw = part.pad_named("SW", "LX", "PH", "SWITCH")
+    sw_net = part.pads.get(sw) if sw else None
+    if sw_net and any(re.match(r"L\d", r) and {vin, sw_net} <= n for r, n in nets_of.items()):
+        return None
+    ic_vin = [p for p in pads if p["ref"] == part.ref and p["net"] == vin]
+    ic_gnd = [p for p in pads if p["ref"] == part.ref and p["net"] == ground]
+    if not ic_vin or not ic_gnd:
+        return None
+    best = None
+    for ref, nets in nets_of.items():
+        if not re.match(r"C\d", ref) or not {vin, ground} <= nets:      # not a connector (CN1)
+            continue
+        c_vin = [p for p in pads if p["ref"] == ref and p["net"] == vin]
+        c_gnd = [p for p in pads if p["ref"] == ref and p["net"] == ground]
+        for a in ic_vin:
+            for b in c_vin:
+                for g in c_gnd:
+                    for d in ic_gnd:
+                        area = _loop_area([(a["x"], a["y"]), (b["x"], b["y"]), (g["x"], g["y"]), (d["x"], d["y"])])
+                        if best is None or area < best[1]:
+                            best = (ref, area)
+    row = {"ref": part.ref, "vin": vin, "ground": ground, "cap": best[0] if best else None}
+    if best:
+        row.update(area_mm2=round(best[1], 1), loop_nh=round(loop_inductance_nh(best[1]), 1))
+    return row
+
+
 def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: list[dict] | None = None,
         max_rise_c: float = 10.0) -> dict:
     spec = design.normalise(spec)
@@ -168,7 +224,8 @@ def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: lis
     # ---- decoupling capacitors near IC supply pins
     from . import sim
     nl = sim.Netlist(spec, symbol_pins=sim._symbol_pins)
-    decoupling = []
+    decoupling, hot_loops = [], []
+    loop_limit = float(spec["rules"].get("hot_loop_mm2") or HOT_LOOP_MM2)
     caps = [c for c in spec["components"] if c["ref"].startswith("C")]
     cap_val = {c["ref"]: sim.parse_value(c.get("value")) for c in caps}
     pads = geo.get("pads", [])
@@ -179,6 +236,14 @@ def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: lis
         part.kind = sim.classify(part)
         if part.kind in ("skip", "connector", "unsupported"):
             continue
+        loop = _hot_loop(part, nl.ground, pads) if part.kind == "converter" else None
+        if loop:
+            hot_loops.append({**loop, "limit_mm2": loop_limit})
+            if loop["cap"] and loop["area_mm2"] > loop_limit:
+                warnings.append(f"{c['ref']}'s input loop ({loop['vin']} through {loop['cap']} to {loop['ground']}) "
+                                f"encloses about {loop['area_mm2']:.0f} mm² (roughly {loop['loop_nh']:.0f} nH); "
+                                f"keep it under {loop_limit:g} mm² by placing {loop['cap']} right at "
+                                f"{c['ref']}'s VIN and GND pins (rules.hot_loop_mm2)")
         supply = nl._supply_pads(part)
         if part.kind in ("ldo", "converter"):
             supply = [p for p in [part.pad_named("VI", "VIN", "IN"), part.pad_named("VO", "VOUT", "OUT")] if p]
@@ -208,5 +273,5 @@ def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: lis
                                 f"{best[1]:.1f} mm away; keep it within {limit:g} mm (give it a placement next to "
                                 f"{c['ref']})")
     rows.sort(key=lambda r: -r["current_ma"])
-    return {"source": source, "method": method, "tracks": rows, "decoupling": decoupling, "problems": problems,
-            "warnings": warnings, "ok": not problems}
+    return {"source": source, "method": method, "tracks": rows, "decoupling": decoupling, "hot_loops": hot_loops,
+            "problems": problems, "warnings": warnings, "ok": not problems}

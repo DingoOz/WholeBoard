@@ -7,6 +7,9 @@ WholeBoard has no releases yet, so changes are grouped by date.
 
 ### Added
 
+- Two more checks on the routed board: each buck converter's input loop (VIN pin, input capacitor, GND pin) is
+  measured and warned above 20 mm² (`rules.hot_loop_mm2`), and other signals running beside a controlled net
+  closer than three of its track widths for more than 5 mm are warned (the 3W rule, against crosstalk).
 - Publish a board to GitHub (**⋯ → Publish to GitHub…**): a new repository, private by default, with the KiCad
   project, the files for JLCPCB, renders, enclosure, firmware and a README. Publishing again adds the latest
   build as a new commit. Uses the GitHub CLI's sign-in, or a token in *Settings → GitHub*.
