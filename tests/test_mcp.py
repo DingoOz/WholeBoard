@@ -134,3 +134,21 @@ def test_claude_code_screen(wholeboard, tmp_path, monkeypatch):
     assert local.post("/api/claude-code/add").json()["added"]
     assert ran[0][:6] == ["/usr/bin/claude", "mcp", "add", "--scope", "user", "wholeboard"]
     assert local.get("/api/claude-code").json()["added"]
+
+
+def test_board_links_for_other_machines_when_listening_on_the_lan(wholeboard, monkeypatch):
+    """Issue #10: on 0.0.0.0, new_board and open_board also hand out the LAN address; on 127.0.0.1 they don't."""
+    from wholeboard import auth
+    server, c = wholeboard
+    monkeypatch.setattr(auth, "lan_addresses", lambda: ["192.168.1.20", "100.64.0.7"])
+    monkeypatch.setenv("WHOLEBOARD_HOST", "0.0.0.0")
+    started = json.loads(_call("new_board", request="A blinker")["content"][0]["text"])
+    pid = started["board"]
+    assert started["lan_urls"] == [f"http://192.168.1.20:80/#{pid}", f"http://100.64.0.7:80/#{pid}"]
+    assert "another machine" in started["lan_note"]
+    opened = json.loads(_call("open_board", board=pid)["content"][0]["text"])
+    assert opened["lan_urls"] == started["lan_urls"] and opened["url"].endswith("#" + pid)
+
+    monkeypatch.setenv("WHOLEBOARD_HOST", "127.0.0.1")              # only this machine can reach it
+    local = json.loads(_call("open_board", board=pid)["content"][0]["text"])
+    assert "lan_urls" not in local and "lan_note" not in local
