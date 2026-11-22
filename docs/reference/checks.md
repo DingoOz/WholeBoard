@@ -15,7 +15,7 @@ result back to the designer to fix; the others are warnings shown with the build
 | DRC | After the copper pour | KiCad's DRC with the board's net classes and `.kicad_dru` ([JLCPCB limits](jlc-limits.md), impedance, mains) | yes |
 | Mains spacing | After DRC | Clearance and creepage measured across the barrier, round slots ([Mains requirements](mains.md)) | yes |
 | Trace heating | After DRC | Temperature rise of each track for the simulated current, IPC-2152 (or IPC-2221 with `rules.trace_heating: "ipc2221"`) | warning |
-| Voltage drop | After DRC | Drop along each power net for the simulated current | warning |
+| Voltage drop | After DRC | Each tracked power rail solved as a resistor network through its routed tracks and vias: the voltage at every load pin at the simulated peak current, warned more than `rules.rail_drop_pct` (2 %) below the rail. Rails with a pour or plane, and boards without a simulation, get the older estimate (the drop between the two farthest pads) | warning |
 | Decoupling | After DRC | Decoupling capacitors too far from their IC's supply pin | warning |
 | Converter hot loop | After DRC | The area (and a rough inductance) of each buck converter's input loop, VIN pin through the input capacitor to the GND pin, above `rules.hot_loop_mm2` (20 mm²) | warning |
 | Interface routing | After DRC | Length, skew within and between pairs, bus matching, vias and stubs against [interface profiles](profiles.md) | warning |

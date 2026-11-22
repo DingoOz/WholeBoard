@@ -227,6 +227,13 @@ Ideas, cheapest first:
 - **Return path.** Warn when a fast or critical trace crosses a void or split in its reference plane; TraceMaker's
   router already knows where the plane voids are (critical nets over voids, issue #24).
 
+**Post-layout rail voltages done 2026-11-22** (without ngspice): `railvolts.solve`, called from `checks.run`, makes each
+tracked power rail a resistor network of its routed tracks (split at tees) and plated vias, holds the rail's source
+(an LDO's output pin, the inductor after a switching regulator, or else a connector) at the simulated rail voltage,
+draws each IC's peak current at its own supply pins and each regulator's input current at its VIN pin, and solves it
+exactly. A pin more than `rules.rail_drop_pct` (2 %) below the rail is warned. Rails with a pour or plane are left to
+the older estimate, since the zone fill is not modelled.
+
 Not proposed: field-solver signal- or power-integrity simulation (openEMS and the like). It is slow, needs IBIS
 models that JLCPCB parts rarely have, and is hard to run unattended; boards that need it belong in a dedicated tool.
 

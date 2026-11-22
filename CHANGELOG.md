@@ -53,6 +53,10 @@ WholeBoard has no releases yet, so changes are grouped by date.
 - Roadmap: antenna keep-outs taken from each vendor's guidance, with separate plastic and metal clearances, then
   checked with a VNA in the real enclosure.
 
+- Rail voltages at the load pins after routing: each tracked power rail is solved as a resistor network through
+  its routed tracks and vias, from its regulator or connector to each chip's supply pins at the simulated peak
+  current. A pin more than 2 % below the rail is warned (`rules.rail_drop_pct`).
+
 ### Changed
 
 - When the AI server can't be reached, the message says why: nothing is listening at that address, or something in

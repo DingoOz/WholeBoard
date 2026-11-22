@@ -393,7 +393,7 @@ def _build(p: Project, spec: dict, view_origin: str | None = None) -> dict:
                 "unconnected": drc["unconnected_list"][:20]}
     try:
         geo_final = geometry.read(final)
-        bc = checks.run(spec, geo_final, sim_res.get("net_current_ma"), sim_res.get("supplies"))
+        bc = checks.run(spec, geo_final, sim_res.get("net_current_ma"), sim_res.get("supplies"), sim_res=sim_res)
         p.visual("drc", "checks", "Current, voltage drop and decoupling", report=bc)
         result["board_checks"] = {k: bc[k] for k in ("problems", "warnings")}
         for w in bc["problems"] + bc["warnings"]:

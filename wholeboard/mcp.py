@@ -204,7 +204,7 @@ def call(name: str, args: dict) -> dict:
         if args.get("mains_nets"):
             s["mains"] = {"nets": args["mains_nets"], "volts": args.get("mains_volts") or mains.DEFAULT_VOLTS}
         geo = _geo(res)
-        out = {**head, **checks.run(s, geo, r.get("net_current_ma"), r.get("supplies"))}
+        out = {**head, **checks.run(s, geo, r.get("net_current_ma"), r.get("supplies"), sim_res=r)}
         if mains.config(s):
             m = mains.check(s, geo)
             out["mains"] = {k: m.get(k) for k in ("requirements", "problems", "barrier", "rows")}
