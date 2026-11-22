@@ -1174,6 +1174,11 @@ const RENDER = {
           `${t.narrowest_mm} mm ${t.layer}`, `+${t.rise_c} °C`, t[`rise_${m[1]}_c`] != null ? `+${t[`rise_${m[1]}_c`]} °C` : "–",
           `${t.copper_mohm} mΩ`, `${t.drop_mv} mV`])));
     }
+    if (r.rails?.length) body.append(el("h5", {}, "Rail voltage at the load pins (through the routed copper)"),
+      table(["Rail", "From", "Load", "Lowest pin", "Drop"], r.rails.map(x => [el("b", {}, x.net), x.sources.join(", "),
+        `${x.current_ma} mA`, x.worst ? `${x.worst.ref}.${x.worst.pad}: ${x.worst.volts} V` : "–",
+        x.worst ? `${x.worst.drop_mv} mV` : "–"])));
+    if (r.rails_note) body.append(el("p", { class: "muted" }, r.rails_note));
     if (r.decoupling.length) body.append(el("h5", {}, "Decoupling capacitors"),
       table(["IC pin", "Net", "Nearest cap", "Distance"], r.decoupling.map(d => [`${d.ref}.${d.pad} ${d.pin !== d.pad ? d.pin : ""}`, d.net,
         d.cap || "none", d.distance_mm != null ? `${d.distance_mm} mm` : "–"])));

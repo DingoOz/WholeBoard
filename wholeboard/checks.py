@@ -3,7 +3,8 @@
 - Trace current: each track's temperature rise at the current its net carries (from the simulation, or the
   supply's rating when there is no simulation). IPC-2152 by default; IPC-2221's older charts on request
   (rules.trace_heating), and both are reported for comparison.
-- Voltage drop: the copper resistance of a power net's tracks between its farthest pads.
+- Voltage drop: the copper resistance of a power net's tracks between its farthest pads. With simulation results,
+  railvolts solves each tracked rail as a resistor network instead and gives the voltage at every load pin.
 - Decoupling: every IC supply pin should have a small capacitor on the same net close by.
 - Converter hot loop: a buck converter's input current switches round the loop from its VIN pin through the input
   capacitor to its GND pin. The loop's area (and a rough inductance) is warned above rules.hot_loop_mm2 (20 mm²):
@@ -166,7 +167,9 @@ def _hot_loop(part, ground: str | None, pads: list[dict]) -> dict | None:
 
 
 def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: list[dict] | None = None,
-        max_rise_c: float = 10.0) -> dict:
+        max_rise_c: float = 10.0, sim_res: dict | None = None) -> dict:
+    """sim_res: the simulation's results, for the rail voltages at the load pins (railvolts)."""
+    from . import railvolts, sim
     spec = design.normalise(spec)
     method = spec["rules"].get("trace_heating") if spec["rules"].get("trace_heating") in METHODS else "ipc2152"
     other = next(m for m in METHODS if m != method)
@@ -189,6 +192,15 @@ def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: lis
     for p in geo.get("pads", []):
         if p.get("net"):
             pads_by_net.setdefault(p["net"], []).append(p)
+
+    # ---- rail voltages at the load pins, through the routed copper
+    nl = sim.Netlist(spec, symbol_pins=sim._symbol_pins)
+    try:
+        rails = railvolts.solve(spec, geo, nl, sim_res)
+    except Exception as e:  # noqa: BLE001 - the other checks still run
+        rails = {"rails": [], "warnings": [], "note": f"The rail voltages at the pins were not worked out: {e}"}
+    warnings += rails["warnings"]
+    solved = {r["net"] for r in rails["rails"]}
 
     # ---- trace current and voltage drop
     for net, tracks in sorted(by_net.items()):
@@ -216,14 +228,12 @@ def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: lis
             row["need_mm"] = round(need, 2)
         from .sim import net_volts
         v = net_volts(net)
-        if v and drop > 0.02 * v and not poured:
+        if v and drop > 0.02 * v and not poured and net not in solved:     # solved: warned pin by pin
             warnings.append(f"{net}: {drop * 1000:.0f} mV drop along {length:.0f} mm of track at {i_ma:.0f} mA "
                             f"({drop / v:.1%} of {v:g} V); widen it or shorten the path")
         rows.append(row)
 
     # ---- decoupling capacitors near IC supply pins
-    from . import sim
-    nl = sim.Netlist(spec, symbol_pins=sim._symbol_pins)
     decoupling, hot_loops = [], []
     loop_limit = float(spec["rules"].get("hot_loop_mm2") or HOT_LOOP_MM2)
     caps = [c for c in spec["components"] if c["ref"].startswith("C")]
@@ -273,5 +283,6 @@ def run(spec: dict, geo: dict, net_current_ma: dict | None = None, supplies: lis
                                 f"{best[1]:.1f} mm away; keep it within {limit:g} mm (give it a placement next to "
                                 f"{c['ref']})")
     rows.sort(key=lambda r: -r["current_ma"])
-    return {"source": source, "method": method, "tracks": rows, "decoupling": decoupling, "hot_loops": hot_loops,
+    return {"source": source, "method": method, "tracks": rows, "rails": rails["rails"], "rails_note": rails["note"],
+            "decoupling": decoupling, "hot_loops": hot_loops,
             "problems": problems, "warnings": warnings, "ok": not problems}
