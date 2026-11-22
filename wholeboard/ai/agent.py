@@ -134,7 +134,8 @@ Design spec (the `spec` argument of submit_design)
 - Pins are "REF.PAD". Mounting holes from board.mounting_holes need no component entries.
 - "rules" is optional; the defaults suit JLCPCB's standard process. Each board also gets a .kicad_dru with \
 JLCPCB's limits for its layer count, so DRC checks annular rings, hole spacing and silkscreen too. Track \
-heating is checked with IPC-2152 (rules.trace_heating "ipc2221" for the older, stricter charts on inner layers).
+heating is checked with IPC-2152 (rules.trace_heating "ipc2221" for the older, stricter charts on inner layers). \
+A buck converter's input loop (VIN pin, input capacitor, GND pin) is warned above rules.hot_loop_mm2 (20 mm²).
 - "blocks": building blocks (format below); their parts and nets are added to "components" and "nets".
 - board.outline: [[x, y], ...] a polygon in mm for a non-rectangular board (width/height follow from it).
 - board.mounting_holes.positions: [[x, y], ...] hole centres, instead of one in each corner.

@@ -8,7 +8,10 @@ A design lists its controlled nets in "impedance":
 An entry may name a routing profile ("profile": "usb2_hs") for an interface's limits; its own fields override
 the profile's. Limits: max_length_mm (each net), max_skew_mm (within a pair), max_match_mm (between the nets of
 a bus), max_vias (each net), max_stub_mm (a branch off the main run, e.g. to an ESD diode), and match with
-max_skew_between_mm (pairs that share a "match" name stay within that length of each other). Profiles: {PROFILES}.
+max_skew_between_mm (pairs that share a "match" name stay within that length of each other). After routing, each
+controlled net is also checked for crosstalk by the 3W rule: other signal tracks on the same layer should stay
+spacing_w (3) track widths away, centre to centre, over any parallel run longer than max_parallel_mm (5); set
+spacing_w to 0 to skip it. Profiles: {PROFILES}.
 Building blocks carry the profile of the interfaces they provide, so the checks apply wherever they are used.
 
 Widths use the IPC-2141 microstrip formulas for an outer-layer trace over the nearest plane. They are
@@ -43,7 +46,11 @@ PROFILES = {
     "rf_50": {"title": "50 Ω RF feed", "kind": "single", "ohms": 50, "max_length_mm": 25, "max_vias": 0,
               "max_stub_mm": 1},
 }
-LIMITS = ("max_length_mm", "max_skew_mm", "max_match_mm", "max_vias", "max_stub_mm", "max_skew_between_mm")
+LIMITS = ("max_length_mm", "max_skew_mm", "max_match_mm", "max_vias", "max_stub_mm", "max_skew_between_mm",
+          "spacing_w", "max_parallel_mm")
+SPACING_W = 3.0           # other signals at least this many track widths away, centre to centre (the 3W rule)
+MAX_PARALLEL_MM = 5.0     # a closer parallel run longer than this is warned (pin escapes are shorter)
+_GND = re.compile(r"^(A|D|P|S|C)?GND\w*$|^VSS\w*$|^0V$", re.I)
 
 
 def profiled(group: dict) -> dict:
@@ -259,6 +266,88 @@ def _arc_len(a, m, b) -> float:
     return r * sweep
 
 
+def _alongside(t: dict, s: dict, reach: float) -> tuple[float, float]:
+    """How far straight track s runs beside straight track t closer than reach (centre to centre), and its
+    closest distance there. Only near-parallel tracks (within 15°) count: crossings and corners are short."""
+    (ax, ay), (bx, by) = t["a"], t["b"]
+    (sx, sy), (ex, ey) = s["a"], s["b"]
+    L, M = math.hypot(bx - ax, by - ay), math.hypot(ex - sx, ey - sy)
+    if L < 1e-6 or M < 1e-6:
+        return 0.0, 0.0
+    ux, uy = (bx - ax) / L, (by - ay) / L
+    if abs(ux * (ex - sx) + uy * (ey - sy)) / M < math.cos(math.radians(15)):
+        return 0.0, 0.0
+    t0, t1 = (sx - ax) * ux + (sy - ay) * uy, (ex - ax) * ux + (ey - ay) * uy
+    d0, d1 = (sy - ay) * ux - (sx - ax) * uy, (ey - ay) * ux - (ex - ax) * uy
+    lo, hi = max(0.0, min(t0, t1)), min(L, max(t0, t1))
+    if hi - lo < 1e-6 or abs(t1 - t0) < 1e-9:
+        return 0.0, 0.0
+    at = lambda x: abs(d0 + (d1 - d0) * (x - t0) / (t1 - t0))  # noqa: E731 - distance from t's line along s
+    a, b = sorted((at(lo), at(hi)))
+    if a >= reach:
+        return 0.0, 0.0
+    run = (hi - lo) if b < reach else (hi - lo) * (reach - a) / (b - a)
+    return run, a
+
+
+def spacing(spec: dict, geo: dict, groups: list[dict]) -> list[dict]:
+    """Parallel runs of other signal tracks closer to a controlled net than its group's spacing_w track widths.
+    Ground and power nets are left out (a guard trace or plane edge beside a fast net helps, it is not crosstalk),
+    and so is the other half of a differential pair."""
+    quiet = {n["name"] for n in spec.get("nets") or [] if n.get("class") == "power" or _GND.match(n["name"])}
+    quiet |= {spec["board"].get("ground_pour")} | set((spec["board"].get("planes") or {}).values())
+    victims: dict[str, tuple[float, float, set]] = {}
+    for g in groups:
+        k = float(g.get("spacing_w", SPACING_W) or 0)
+        if k <= 0:
+            continue
+        partners = set(g["nets"]) if g["kind"] == "diff" else set()
+        for n in g["nets"]:
+            victims[n] = (k, float(g.get("max_parallel_mm") or MAX_PARALLEL_MM), partners)
+    if not victims:
+        return []
+    tracks = [t for t in geo.get("tracks") or [] if t.get("net")]
+    cell, grid = 2.0, {}
+    for i, t in enumerate(tracks):          # a grid of the tracks that can couple into a controlled net
+        if t["net"] in quiet:
+            continue
+        xs, ys = (t["a"][0], t["b"][0]), (t["a"][1], t["b"][1])
+        for cx in range(int(min(xs) // cell), int(max(xs) // cell) + 1):
+            for cy in range(int(min(ys) // cell), int(max(ys) // cell) + 1):
+                grid.setdefault((cx, cy), []).append(i)
+    runs: dict[tuple[str, str], dict] = {}
+    for t in tracks:
+        if t["net"] not in victims:
+            continue
+        k, limit, partners = victims[t["net"]]
+        reach = k * t["w"]
+        xs, ys = (t["a"][0], t["b"][0]), (t["a"][1], t["b"][1])
+        near = set()
+        for cx in range(int((min(xs) - reach) // cell), int((max(xs) + reach) // cell) + 1):
+            for cy in range(int((min(ys) - reach) // cell), int((max(ys) + reach) // cell) + 1):
+                near.update(grid.get((cx, cy), ()))
+        for j in near:
+            s = tracks[j]
+            if s["net"] == t["net"] or s["net"] in partners or s.get("layer") != t.get("layer"):
+                continue
+            run, d = _alongside(t, s, reach)
+            if run <= 0:
+                continue
+            r = runs.setdefault((t["net"], s["net"]), {
+                "net": t["net"], "other": s["net"], "layer": t.get("layer") or "?", "parallel_mm": 0.0,
+                "closest_mm": d, "needs_mm": reach, "spacing_w": k, "limit_mm": limit})
+            r["parallel_mm"] += run
+            r["closest_mm"], r["needs_mm"] = min(r["closest_mm"], d), max(r["needs_mm"], reach)
+    out, seen = [], set()
+    for (a, b), r in sorted(runs.items(), key=lambda kv: -kv[1]["parallel_mm"]):
+        if r["parallel_mm"] <= r["limit_mm"] or frozenset((a, b)) in seen:
+            continue                        # two controlled nets side by side are reported once
+        seen.add(frozenset((a, b)))
+        out.append({**r, "parallel_mm": round(r["parallel_mm"], 1), "closest_mm": round(r["closest_mm"], 3),
+                    "needs_mm": round(r["needs_mm"], 3)})
+    return out
+
+
 def check(spec: dict, geo: dict) -> dict:
     """After routing: each controlled net's length and narrowest track, and each pair's skew."""
     groups, problems, warnings = [], [], []
@@ -314,7 +403,12 @@ def check(spec: dict, geo: dict) -> dict:
         limit = min((r.get("max_skew_between_mm") for r in rows_ if r.get("max_skew_between_mm") is not None), default=None)
         if len(avg) > 1 and limit is not None and max(avg) - min(avg) > limit:
             warnings.append(f"The {name} pairs differ in length by {max(avg) - min(avg):.1f} mm; keep them within {limit:g} mm")
-    return {"groups": groups, "problems": problems, "warnings": warnings,
+    close = spacing(spec, geo, groups)
+    for r in close:
+        warnings.append(f"{r['net']} runs {r['parallel_mm']:g} mm beside {r['other']} on {r['layer']}, "
+                        f"{r['closest_mm']:g} mm apart centre to centre; keep other signals {r['needs_mm']:g} mm "
+                        f"away ({r['spacing_w']:g} track widths) or route ground between them, against crosstalk")
+    return {"groups": groups, "spacing": close, "problems": problems, "warnings": warnings,
             "order_note": (f"Order with impedance control, stack-up {groups[0]['stackup']}."
                            if groups and int(spec["board"]["layers"]) >= 4 else "")}
 
