@@ -7,6 +7,9 @@ WholeBoard has no releases yet, so changes are grouped by date.
 
 ### Added
 
+- Return-path check on the routed board: each controlled net should keep a ground or power plane under it on a
+  neighbouring layer. Stretches with no plane longer than 1 mm (`max_void_mm`) and crossings from one plane's net
+  to another's are warned.
 - Two more checks on the routed board: each buck converter's input loop (VIN pin, input capacitor, GND pin) is
   measured and warned above 20 mm² (`rules.hot_loop_mm2`), and other signals running beside a controlled net
   closer than three of its track widths for more than 5 mm are warned (the 3W rule, against crosstalk).
