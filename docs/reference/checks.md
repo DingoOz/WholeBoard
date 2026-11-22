@@ -20,6 +20,7 @@ result back to the designer to fix; the others are warnings shown with the build
 | Converter hot loop | After DRC | The area (and a rough inductance) of each buck converter's input loop, VIN pin through the input capacitor to the GND pin, above `rules.hot_loop_mm2` (20 mm²) | warning |
 | Interface routing | After DRC | Length, skew within and between pairs, bus matching, vias and stubs against [interface profiles](profiles.md) | warning |
 | Crosstalk spacing | After DRC | Other signal tracks running beside a controlled net closer than 3 of its track widths, centre to centre, for more than 5 mm (the 3W rule; `spacing_w` and `max_parallel_mm` in its `impedance` entry) | warning |
+| Return path | After DRC | Each controlled net keeps a ground or power plane under it on a neighbouring layer: stretches with no plane longer than `max_void_mm` (1 mm), and crossings from one plane's net to another's | warning |
 | CPL rotations | Fab outputs | JLCPCB's rotation for each package (SOT-23, SOIC, QFN …); a component's `cpl` entry overrides it | – |
 | Visual review | After a clean build | The AI looks at the renders for parts off the board, blocked connectors, hidden LEDs. Models that cannot see images skip it; *Settings → AI → Vision* turns it off | – |
 | Stock | Quote, and *Check stock* | Live JLCPCB stock for the boards to be assembled, with replacements | warning |

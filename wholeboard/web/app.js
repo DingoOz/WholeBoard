@@ -1080,6 +1080,12 @@ const RENDER = {
     if (r.spacing?.length) body.append(el("h5", {}, "Signals running too close (3W rule)"),
       table(["Net", "Beside", "Layer", "Parallel run", "Closest", "Wanted"], r.spacing.map(s => [el("b", {}, s.net), s.other, s.layer,
         `${s.parallel_mm} mm`, `${s.closest_mm} mm`, `${s.needs_mm} mm`])));
+    const rp = r.return_path;
+    if (rp?.nets?.length) body.append(el("h5", {}, "Plane under the traces (return path)"),
+      table(["Net", "Checked", "Longest stretch with no plane", "Plane splits crossed"], rp.nets.map(n => [el("b", {}, n.net),
+        `${n.checked_mm} mm`, n.longest_void_mm ? `${n.longest_void_mm} mm (limit ${n.limit_mm} mm)` : "none",
+        n.splits.length ? n.splits.map(s => s.between.join(" → ")).join(", ") : "none"])));
+    if (rp?.note) body.append(el("p", { class: "muted" }, rp.note));
     if (r.order_note) body.append(el("p", {}, el("b", {}, r.order_note)));
     return card(v.title, body);
   },

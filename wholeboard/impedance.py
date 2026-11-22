@@ -11,7 +11,9 @@ a bus), max_vias (each net), max_stub_mm (a branch off the main run, e.g. to an 
 max_skew_between_mm (pairs that share a "match" name stay within that length of each other). After routing, each
 controlled net is also checked for crosstalk by the 3W rule: other signal tracks on the same layer should stay
 spacing_w (3) track widths away, centre to centre, over any parallel run longer than max_parallel_mm (5); set
-spacing_w to 0 to skip it. Profiles: {PROFILES}.
+spacing_w to 0 to skip it. And each must keep a ground or power plane on a neighbouring layer under it:
+max_void_mm (1) is the longest stretch with none, and crossing from one plane's net to another's is warned.
+Profiles: {PROFILES}.
 Building blocks carry the profile of the interfaces they provide, so the checks apply wherever they are used.
 
 Widths use the IPC-2141 microstrip formulas for an outer-layer trace over the nearest plane. They are
@@ -47,7 +49,7 @@ PROFILES = {
               "max_stub_mm": 1},
 }
 LIMITS = ("max_length_mm", "max_skew_mm", "max_match_mm", "max_vias", "max_stub_mm", "max_skew_between_mm",
-          "spacing_w", "max_parallel_mm")
+          "spacing_w", "max_parallel_mm", "max_void_mm")
 SPACING_W = 3.0           # other signals at least this many track widths away, centre to centre (the 3W rule)
 MAX_PARALLEL_MM = 5.0     # a closer parallel run longer than this is warned (pin escapes are shorter)
 _GND = re.compile(r"^(A|D|P|S|C)?GND\w*$|^VSS\w*$|^0V$", re.I)
@@ -408,7 +410,10 @@ def check(spec: dict, geo: dict) -> dict:
         warnings.append(f"{r['net']} runs {r['parallel_mm']:g} mm beside {r['other']} on {r['layer']}, "
                         f"{r['closest_mm']:g} mm apart centre to centre; keep other signals {r['needs_mm']:g} mm "
                         f"away ({r['spacing_w']:g} track widths) or route ground between them, against crosstalk")
-    return {"groups": groups, "spacing": close, "problems": problems, "warnings": warnings,
+    from . import returnpath
+    ret = returnpath.check(spec, geo, groups)
+    warnings += ret["warnings"]
+    return {"groups": groups, "spacing": close, "return_path": ret, "problems": problems, "warnings": warnings,
             "order_note": (f"Order with impedance control, stack-up {groups[0]['stackup']}."
                            if groups and int(spec["board"]["layers"]) >= 4 else "")}
 

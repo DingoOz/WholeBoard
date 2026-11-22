@@ -239,6 +239,14 @@ centre to centre, for more than `max_parallel_mm` (5 mm); ground, power and a pa
 length matching* was already there (`"kind": "bus"` with `max_match_mm`). Still open: post-layout re-simulation and the
 return-path check (it needs TraceMaker's plane voids, DingoOz/TraceMaker#24).
 
+**Return path done 2026-11-22**: it did not need TraceMaker. After KiCad's DRC refills and saves the zones, the board
+has their filled copper, which `geometry.read` already returns. `returnpath.check` (called from `impedance.check`)
+samples each controlled net's tracks every 0.2 mm and looks for a ground or power fill on a neighbouring copper layer.
+It warns about a stretch with no plane longer than `max_void_mm` (1 mm), and about a crossing from one plane's net to
+another's when no neighbouring layer carries the same plane across it. The net's own vias and through-hole pads are
+skipped. On kookabus-13 and -15 (4 layers, In2.Cu split VBUS/3V3) it takes 0.05 s and finds only 0.2 mm gaps at
+other nets' antipads.
+
 ## 17. Placement packs a large chip's decoupling caps onto one side, across its signal escapes
 
 On the PoE switch, `tracemaker-place` put all 27 of each KSZ9897's 100 nF caps in a cluster beside the chip's
