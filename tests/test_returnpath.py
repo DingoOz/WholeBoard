@@ -63,6 +63,15 @@ def test_the_nets_own_via_clearance_is_not_a_void():
     assert r["nets"][0]["longest_void_mm"] == 0 and r["nets"][1]["longest_void_mm"] > 1   # DN has no via there
 
 
+def test_a_through_hole_pin_with_an_oval_drill_is_not_a_void():
+    zones = [_rect("GND", "In1.Cu", -5, 0, 9.0, 10), _rect("GND", "In1.Cu", 11.0, 0, 30, 10)]   # cleared round 10, 5
+    geo = _geo(zones)
+    geo["pads"] = [{"ref": "J1", "name": "1", "x": 10, "y": 5, "w": 1.4, "h": 1.4, "rot": 0, "kind": "thru_hole",
+                    "front": True, "back": True, "drill": 0, "net": "USB_DP"}]
+    r = _rp(_spec(), geo)
+    assert r["nets"][0]["longest_void_mm"] == 0 and r["nets"][1]["longest_void_mm"] > 1   # DN has no pin there
+
+
 def test_signal_zones_are_not_planes_and_no_planes_is_a_note():
     r = _rp(_spec(), _geo([_rect("USB_DN", "In1.Cu", -5, 0, 30, 10)]))
     assert r["nets"] == [] and "not checked" in r["note"]

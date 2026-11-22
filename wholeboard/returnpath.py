@@ -95,7 +95,8 @@ def check(spec: dict, geo: dict, groups: list[dict]) -> dict:
         if v.get("net") in limits and v.get("p"):
             keep_out.setdefault(v["net"], []).append((v["p"][0], v["p"][1], v.get("d", 0.6) / 2 + 0.3))
     for p in geo.get("pads") or []:
-        if p.get("net") in limits and p.get("drill"):
+        # through-hole by drill, type or layers: an oval drill reads as 0
+        if p.get("net") in limits and (p.get("drill") or p.get("kind") == "thru_hole" or (p.get("front") and p.get("back"))):
             keep_out.setdefault(p["net"], []).append((p["x"], p["y"], max(p["w"], p["h"]) / 2 + 0.3))
     no_plane: set[str] = set()
     for net, limit in limits.items():
